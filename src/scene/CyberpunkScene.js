@@ -1834,6 +1834,19 @@ export class CyberpunkScene {
             house.rotation.y = p.ry;
             group.add(house);
 
+            // Neon housing frame (child of house so it inherits rotation)
+            const neonColor = randomNeon();
+            const frameGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(0.54, 1.54, 0.34));
+            const frameMat = new THREE.LineBasicMaterial({ color: neonColor });
+            const frame = new THREE.LineSegments(frameGeo, frameMat);
+            house.add(frame);
+
+            // Neon visor hood above housing
+            const visorMat = new THREE.MeshBasicMaterial({ color: neonColor });
+            const visor = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.05, 0.2), visorMat);
+            visor.position.set(0, 0.8, -0.22); // sticks out from front face
+            house.add(visor);
+
             // Three lights: red, yellow, green
             const lightColors = [0xff0000, 0xffaa00, 0x00ff00];
             const phase = hashChunk(cx, cz) % 3;
