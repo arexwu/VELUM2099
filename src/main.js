@@ -12,6 +12,7 @@ import { DataCollector } from './data/DataCollector.js';
 import { Exporter } from './data/Exporter.js';
 import { TextureManager } from './textures/TextureManager.js';
 import { LiveStreamClient } from './textures/LiveStreamClient.js';
+import { LofiRadio } from './audio/LofiRadio.js';
 
 /* ── Scrolling Chinese text overlay ── */
 const _SCROLL_PHRASES = [
@@ -203,6 +204,13 @@ class App {
                 const active = this._liveClient.toggle();
                 console.log(`[LiveStream] ${active ? 'Connecting to server...' : 'Disconnected'}`);
             }
+            // Toggle lo-fi radio with R
+            if (e.code === 'KeyR') {
+                if (!this._radio) this._radio = new LofiRadio();
+                const active = this._radio.toggle();
+                console.log(`[Radio] ${active ? '♪ ON' : 'OFF'}`);
+                this._updateRadioHud(active);
+            }
         };
         window.addEventListener('keydown', this._captureKeyHandler);
 
@@ -227,7 +235,7 @@ class App {
         this._lastTime = performance.now();
         this._gameLoop();
 
-        console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | E=调色板 | L=实时风格化 | ESC=返回菜单');
+        console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | E=调色板 | R=电台 | L=实时风格化 | ESC=返回菜单');
     }
 
     _gameLoop() {
@@ -238,6 +246,7 @@ class App {
         this._lastTime = now;
 
         // Update vehicle physics
+        this.vehicle.groundY = this.scene.getGroundHeight(this.vehicle.position.x, this.vehicle.position.z);
         this.vehicle.update(dt);
 
         // Collision detection
@@ -273,6 +282,9 @@ class App {
         // Scrolling Chinese text
         if (this._scrollText) this._scrollText.update(dt);
 
+        // Lo-fi radio scheduling
+        if (this._radio) this._radio.update(dt);
+
         // FPS counter
         this._fpsFrames++;
         this._fpsTime += dt;
@@ -307,8 +319,10 @@ class App {
         // Stop recording
         this.collector.stopSession();
 
-        // Clean up scrolling text
+        // Clean up scrolling text and radio
         if (this._scrollText) this._scrollText.cleanup();
+        if (this._radio) { this._radio.dispose(); this._radio = null; }
+        this._updateRadioHud(false);
 
         // Hide canvas, VHS overlay, and FPS counter, show terminal
         this.canvasEl.style.display = 'none';
@@ -320,6 +334,20 @@ class App {
     async _exportData() {
         const data = this.collector.getData();
         await Exporter.exportZip(data);
+    }
+
+    _updateRadioHud(active) {
+        if (!this._radioHud) {
+            this._radioHud = document.createElement('div');
+            this._radioHud.style.cssText = 'position:fixed;top:8px;right:12px;font-family:"VT323",monospace;font-size:16px;color:#0ff;letter-spacing:2px;z-index:200;pointer-events:none;text-shadow:0 0 6px rgba(0,255,255,0.4),1px 0 0 rgba(255,40,40,0.3),-1px 0 0 rgba(40,40,255,0.2);opacity:0.85;white-space:pre;';
+            document.body.appendChild(this._radioHud);
+        }
+        if (active) {
+            this._radioHud.textContent = '📻 NEURODRIVE FM — ♪ lo-fi beats';
+            this._radioHud.style.display = 'block';
+        } else {
+            this._radioHud.style.display = 'none';
+        }
     }
 
     _showSettings() {

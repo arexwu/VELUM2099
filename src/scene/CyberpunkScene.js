@@ -185,6 +185,15 @@ const CHUNK_STRAIGHT_EW = 1;  // East-West road
 const CHUNK_CROSS = 2;        // Intersection
 const CHUNK_T_NORTH = 3;      // T from south, splits east-west
 const CHUNK_EMPTY = 4;        // Building-only block (no road)
+const CHUNK_HIGHWAY_NS = 5;   // Elevated highway (N-S)
+const CHUNK_HIGHWAY_EW = 6;   // Elevated highway (E-W)
+const CHUNK_RAMP_UP_NS = 7;   // Ramp going up (N-S)
+const CHUNK_RAMP_DOWN_NS = 8; // Ramp going down (N-S)
+const CHUNK_RAMP_UP_EW = 9;   // Ramp going up (E-W)
+const CHUNK_RAMP_DOWN_EW = 10; // Ramp going down (E-W)
+
+const HIGHWAY_HEIGHT = 8;     // Elevation of highways
+const HIGHWAY_WIDTH = 16;     // Slightly narrower than normal roads
 
 export class CyberpunkScene {
     constructor(canvas, textureManager) {
@@ -340,11 +349,61 @@ export class CyberpunkScene {
     _isNSRoadLine(cx) { return this._isRoadLine(cx, 7777); }
     _isEWRoadLine(cz) { return this._isRoadLine(cz, 9999); }
 
+    /** Highway lines — much rarer, fixed stride of 10-14 chunks */
+    _isHighwayLine(coord, seed) {
+        if (coord === 0) return false; // no highway at origin
+        let pos = 0;
+        if (coord > 0) {
+            while (pos < coord) {
+                const stride = 10 + (((hashChunk(pos, seed) >>> 0) & 3)); // 10-13
+                pos += stride;
+                if (pos === coord) return true;
+            }
+        } else {
+            while (pos > coord) {
+                const stride = 10 + (((hashChunk(pos, seed) >>> 0) & 3));
+                pos -= stride;
+                if (pos === coord) return true;
+            }
+        }
+        return false;
+    }
+    _isNSHighwayLine(cx) { return this._isHighwayLine(cx, 11111); }
+    _isEWHighwayLine(cz) { return this._isHighwayLine(cz, 22222); }
+
+    /** Check if a neighbor chunk in a given direction is a highway */
+    _isHighwayChunk(cx, cz, dir) {
+        const onHwyNS = this._isNSHighwayLine(cx) && !this._isEWRoadLine(cz);
+        const onHwyEW = this._isEWHighwayLine(cz) && !this._isNSRoadLine(cx);
+        if (dir === 'ns') return onHwyNS;
+        if (dir === 'ew') return onHwyEW;
+        return onHwyNS || onHwyEW;
+    }
+
     _getChunkType(cx, cz) {
         const r = seededRandom(cx, cz, 0);
 
         const onNSRoad = this._isNSRoadLine(cx);
         const onEWRoad = this._isEWRoadLine(cz);
+        const onNSHwy = this._isNSHighwayLine(cx);
+        const onEWHwy = this._isEWHighwayLine(cz);
+
+        // Highway takes priority on its dedicated line (but not at road intersections)
+        if (onNSHwy && !onEWRoad && !onEWHwy) {
+            // Check if neighbors along Z are also highway — if not, this is a ramp
+            const prevIsHwy = this._isNSHighwayLine(cx) && !this._isEWRoadLine(cz - 1);
+            const nextIsHwy = this._isNSHighwayLine(cx) && !this._isEWRoadLine(cz + 1);
+            if (!prevIsHwy && nextIsHwy) return CHUNK_RAMP_UP_NS;
+            if (prevIsHwy && !nextIsHwy) return CHUNK_RAMP_DOWN_NS;
+            return CHUNK_HIGHWAY_NS;
+        }
+        if (onEWHwy && !onNSRoad && !onNSHwy) {
+            const prevIsHwy = this._isEWHighwayLine(cz) && !this._isNSRoadLine(cx - 1);
+            const nextIsHwy = this._isEWHighwayLine(cz) && !this._isNSRoadLine(cx + 1);
+            if (!prevIsHwy && nextIsHwy) return CHUNK_RAMP_UP_EW;
+            if (prevIsHwy && !nextIsHwy) return CHUNK_RAMP_DOWN_EW;
+            return CHUNK_HIGHWAY_EW;
+        }
 
         if (onNSRoad && onEWRoad) return CHUNK_CROSS;
         if (onNSRoad) return CHUNK_STRAIGHT_NS;
@@ -387,6 +446,18 @@ export class CyberpunkScene {
             this._buildIntersection(group, worldX, worldZ, cx, cz);
             this._buildCornerBuildings(group, meshes, chunkSigns, worldX, worldZ, cx, cz, collidables);
             this._buildTrafficLights(group, meshes, worldX, worldZ, cx, cz, collidables);
+        } else if (type === CHUNK_HIGHWAY_NS) {
+            this._buildHighway(group, meshes, worldX, worldZ, cx, cz, collidables, 'ns', 0);
+        } else if (type === CHUNK_HIGHWAY_EW) {
+            this._buildHighway(group, meshes, worldX, worldZ, cx, cz, collidables, 'ew', 0);
+        } else if (type === CHUNK_RAMP_UP_NS) {
+            this._buildRamp(group, meshes, worldX, worldZ, cx, cz, collidables, 'ns', 1);
+        } else if (type === CHUNK_RAMP_DOWN_NS) {
+            this._buildRamp(group, meshes, worldX, worldZ, cx, cz, collidables, 'ns', -1);
+        } else if (type === CHUNK_RAMP_UP_EW) {
+            this._buildRamp(group, meshes, worldX, worldZ, cx, cz, collidables, 'ew', 1);
+        } else if (type === CHUNK_RAMP_DOWN_EW) {
+            this._buildRamp(group, meshes, worldX, worldZ, cx, cz, collidables, 'ew', -1);
         } else {
             // Empty — fill with buildings
             this._buildBlockBuildings(group, meshes, chunkSigns, worldX, worldZ, cx, cz, collidables);
@@ -563,6 +634,268 @@ export class CyberpunkScene {
             lamp.position.set(p.x, 7.1, p.z);
             group.add(lamp);
         });
+    }
+
+    /* ── Elevated Highway builders ── */
+
+    _buildHighway(group, meshes, wx, wz, cx, cz, collidables, dir, _unused) {
+        const H = HIGHWAY_HEIGHT;
+        const W = HIGHWAY_WIDTH;
+
+        // Elevated road deck
+        const deckGeo = new THREE.PlaneGeometry(
+            dir === 'ns' ? W : CHUNK_SIZE,
+            dir === 'ns' ? CHUNK_SIZE : W
+        );
+        const deckMat = this._createRoadMaterial(cx, cz);
+        const deck = new THREE.Mesh(deckGeo, deckMat);
+        deck.rotation.x = -Math.PI / 2;
+        deck.position.set(wx, H + 0.005, wz);
+        group.add(deck);
+
+        // Underside (dark slab for visual depth)
+        const slabGeo = new THREE.BoxGeometry(
+            dir === 'ns' ? W + 0.5 : CHUNK_SIZE,
+            0.4,
+            dir === 'ns' ? CHUNK_SIZE : W + 0.5
+        );
+        const slabMat = new THREE.MeshStandardMaterial({ color: 0x333340, roughness: 0.9, metalness: 0.1 });
+        const slab = new THREE.Mesh(slabGeo, slabMat);
+        slab.position.set(wx, H - 0.2, wz);
+        group.add(slab);
+
+        // Center dashes
+        const dashCount = Math.floor(CHUNK_SIZE / 4);
+        const dashGeo = dir === 'ns' ? this._dashGeoNS : this._dashGeoEW;
+        const dashes = new THREE.InstancedMesh(dashGeo, this._dashMat, dashCount);
+        const _m = new THREE.Matrix4();
+        const _rx = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+        for (let i = 0; i < dashCount; i++) {
+            const d = -CHUNK_SIZE / 2 + i * 4;
+            if (dir === 'ns') {
+                _m.makeTranslation(wx, H + 0.02, wz + d).multiply(_rx);
+            } else {
+                _m.makeTranslation(wx + d, H + 0.02, wz).multiply(_rx);
+            }
+            dashes.setMatrixAt(i, _m);
+        }
+        dashes.instanceMatrix.needsUpdate = true;
+        group.add(dashes);
+
+        // Concrete pillars (6 per chunk)
+        const pillarMat = new THREE.MeshStandardMaterial({ color: 0x555560, roughness: 0.8, metalness: 0.15 });
+        const pillarGeo = new THREE.CylinderGeometry(0.4, 0.5, H, 8);
+        for (let i = 0; i < 6; i++) {
+            const along = -CHUNK_SIZE / 2 + CHUNK_SIZE * (i + 0.5) / 6;
+            for (const s of [-1, 1]) {
+                const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+                if (dir === 'ns') {
+                    pillar.position.set(wx + s * (W / 2 - 1), H / 2, wz + along);
+                } else {
+                    pillar.position.set(wx + along, H / 2, wz + s * (W / 2 - 1));
+                }
+                group.add(pillar);
+
+                const pBox = new THREE.Box3().setFromCenterAndSize(
+                    pillar.position,
+                    new THREE.Vector3(1.2, H, 1.2)
+                );
+                collidables.push({ box: pBox, mesh: pillar, type: 'pole' });
+            }
+        }
+
+        // Jersey barriers on edges
+        const barrierMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.7, metalness: 0.2 });
+        for (const s of [-1, 1]) {
+            const bGeo = new THREE.BoxGeometry(
+                dir === 'ns' ? 0.4 : CHUNK_SIZE,
+                0.8,
+                dir === 'ns' ? CHUNK_SIZE : 0.4
+            );
+            const barrier = new THREE.Mesh(bGeo, barrierMat);
+            if (dir === 'ns') {
+                barrier.position.set(wx + s * (W / 2), H + 0.4, wz);
+            } else {
+                barrier.position.set(wx, H + 0.4, wz + s * (W / 2));
+            }
+            group.add(barrier);
+
+            const bBox = new THREE.Box3().setFromCenterAndSize(
+                barrier.position.clone(),
+                new THREE.Vector3(
+                    dir === 'ns' ? 0.4 : CHUNK_SIZE,
+                    0.8,
+                    dir === 'ns' ? CHUNK_SIZE : 0.4
+                )
+            );
+            collidables.push({ box: bBox, mesh: barrier, type: 'barrier' });
+
+            // Neon edge strip on barrier top
+            const nGeo = new THREE.BoxGeometry(
+                dir === 'ns' ? 0.1 : CHUNK_SIZE,
+                0.06,
+                dir === 'ns' ? CHUNK_SIZE : 0.1
+            );
+            const nMat = new THREE.MeshBasicMaterial({
+                color: s === -1 ? _activePalette.neons[2] : _activePalette.neons[0]
+            });
+            nMat._isNeon = true;
+            const neon = new THREE.Mesh(nGeo, nMat);
+            neon.position.copy(barrier.position);
+            neon.position.y = H + 0.84;
+            group.add(neon);
+        }
+
+        // Ground road underneath still exists (from ground plane), add a simple ground-level road too
+        const groundRoadGeo = new THREE.PlaneGeometry(
+            dir === 'ns' ? W + 4 : CHUNK_SIZE,
+            dir === 'ns' ? CHUNK_SIZE : W + 4
+        );
+        const groundRoadMat = this._createRoadMaterial(cx, cz);
+        const groundRoad = new THREE.Mesh(groundRoadGeo, groundRoadMat);
+        groundRoad.rotation.x = -Math.PI / 2;
+        groundRoad.position.set(wx, 0.003, wz);
+        group.add(groundRoad);
+    }
+
+    _buildRamp(group, meshes, wx, wz, cx, cz, collidables, dir, rampDir) {
+        // rampDir: 1 = ascending (0→HIGHWAY_HEIGHT), -1 = descending (HIGHWAY_HEIGHT→0)
+        const H = HIGHWAY_HEIGHT;
+        const W = HIGHWAY_WIDTH;
+        const segments = 12;
+
+        // Ramp surface — custom geometry with sloped vertices
+        const rampGeo = new THREE.PlaneGeometry(
+            dir === 'ns' ? W : CHUNK_SIZE,
+            dir === 'ns' ? CHUNK_SIZE : W,
+            dir === 'ns' ? 1 : segments,
+            dir === 'ns' ? segments : 1
+        );
+        const posAttr = rampGeo.attributes.position;
+        for (let i = 0; i < posAttr.count; i++) {
+            // PlaneGeometry is in XY, we'll rotate to XZ later
+            // For NS ramp: Y coordinate maps to Z (along road), varies from -CHUNK_SIZE/2 to +CHUNK_SIZE/2
+            // We want to offset the Z (which is Y before rotation) to create height
+            let t;
+            if (dir === 'ns') {
+                const y = posAttr.getY(i); // -CHUNK_SIZE/2 to CHUNK_SIZE/2
+                t = (y + CHUNK_SIZE / 2) / CHUNK_SIZE; // 0 to 1
+            } else {
+                const x = posAttr.getX(i);
+                t = (x + CHUNK_SIZE / 2) / CHUNK_SIZE;
+            }
+            if (rampDir === -1) t = 1 - t;
+            // Smooth the ramp with a cubic ease
+            const height = t * H;
+            posAttr.setZ(i, posAttr.getZ(i) + height);
+        }
+        posAttr.needsUpdate = true;
+        rampGeo.computeVertexNormals();
+
+        const rampMat = this._createRoadMaterial(cx, cz);
+        const ramp = new THREE.Mesh(rampGeo, rampMat);
+        ramp.rotation.x = -Math.PI / 2;
+        ramp.position.set(wx, 0.005, wz);
+        group.add(ramp);
+
+        // Ramp underside slab (just a simple angled box — approximate)
+        const slabGeo = new THREE.BoxGeometry(
+            dir === 'ns' ? W + 0.5 : CHUNK_SIZE,
+            0.3,
+            dir === 'ns' ? CHUNK_SIZE : W + 0.5
+        );
+        const slabMat = new THREE.MeshStandardMaterial({ color: 0x333340, roughness: 0.9 });
+        const slab = new THREE.Mesh(slabGeo, slabMat);
+        slab.position.set(wx, H / 2, wz);
+        // Tilt the slab to roughly match the ramp
+        if (dir === 'ns') {
+            slab.rotation.x = rampDir * Math.atan2(H, CHUNK_SIZE);
+        } else {
+            slab.rotation.z = -rampDir * Math.atan2(H, CHUNK_SIZE);
+        }
+        group.add(slab);
+
+        // Guard walls on both sides
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.7, metalness: 0.2 });
+        for (const s of [-1, 1]) {
+            // Simple wall boxes at ground and top — 4 segments along the ramp
+            for (let seg = 0; seg < 4; seg++) {
+                const t = (seg + 0.5) / 4;
+                const segH = (rampDir === 1 ? t : (1 - t)) * H;
+                const along = -CHUNK_SIZE / 2 + t * CHUNK_SIZE;
+
+                const wGeo = new THREE.BoxGeometry(
+                    dir === 'ns' ? 0.3 : CHUNK_SIZE / 4,
+                    0.8,
+                    dir === 'ns' ? CHUNK_SIZE / 4 : 0.3
+                );
+                const wall = new THREE.Mesh(wGeo, wallMat);
+                if (dir === 'ns') {
+                    wall.position.set(wx + s * (W / 2), segH + 0.4, wz + along);
+                } else {
+                    wall.position.set(wx + along, segH + 0.4, wz + s * (W / 2));
+                }
+                group.add(wall);
+
+                const wBox = new THREE.Box3().setFromCenterAndSize(
+                    wall.position.clone(),
+                    new THREE.Vector3(
+                        dir === 'ns' ? 0.3 : CHUNK_SIZE / 4,
+                        0.8 + segH,
+                        dir === 'ns' ? CHUNK_SIZE / 4 : 0.3
+                    )
+                );
+                collidables.push({ box: wBox, mesh: wall, type: 'barrier' });
+            }
+
+            // Neon strip along the wall top
+            const nGeo = new THREE.BoxGeometry(
+                dir === 'ns' ? 0.08 : CHUNK_SIZE,
+                0.05,
+                dir === 'ns' ? CHUNK_SIZE : 0.08
+            );
+            const nMat = new THREE.MeshBasicMaterial({
+                color: s === -1 ? _activePalette.neons[2] : _activePalette.neons[0]
+            });
+            nMat._isNeon = true;
+            const neon = new THREE.Mesh(nGeo, nMat);
+            if (dir === 'ns') {
+                neon.position.set(wx + s * (W / 2), H / 2 + 0.85, wz);
+            } else {
+                neon.position.set(wx, H / 2 + 0.85, wz + s * (W / 2));
+            }
+            group.add(neon);
+        }
+
+        // Support pillars (fewer than highway — 3 pairs)
+        const pillarMat = new THREE.MeshStandardMaterial({ color: 0x555560, roughness: 0.8, metalness: 0.15 });
+        for (let i = 0; i < 3; i++) {
+            const t = (i + 0.5) / 3;
+            const along = -CHUNK_SIZE / 2 + t * CHUNK_SIZE;
+            const pillarH = (rampDir === 1 ? t : (1 - t)) * H;
+            if (pillarH < 1.5) continue; // skip very short pillars
+            const pGeo = new THREE.CylinderGeometry(0.35, 0.45, pillarH, 8);
+            for (const s of [-1, 1]) {
+                const pillar = new THREE.Mesh(pGeo, pillarMat);
+                if (dir === 'ns') {
+                    pillar.position.set(wx + s * (W / 2 - 1), pillarH / 2, wz + along);
+                } else {
+                    pillar.position.set(wx + along, pillarH / 2, wz + s * (W / 2 - 1));
+                }
+                group.add(pillar);
+            }
+        }
+
+        // Ground-level road underneath
+        const groundRoadGeo = new THREE.PlaneGeometry(
+            dir === 'ns' ? W + 4 : CHUNK_SIZE,
+            dir === 'ns' ? CHUNK_SIZE : W + 4
+        );
+        const groundRoadMat = this._createRoadMaterial(cx, cz);
+        const groundRoad = new THREE.Mesh(groundRoadGeo, groundRoadMat);
+        groundRoad.rotation.x = -Math.PI / 2;
+        groundRoad.position.set(wx, 0.003, wz);
+        group.add(groundRoad);
     }
 
     /* ── Building generators ── */
@@ -1239,6 +1572,55 @@ export class CyberpunkScene {
         }
 
         return result;
+    }
+
+    /** Get ground height at a world XZ position (for vehicle Y) */
+    getGroundHeight(x, z) {
+        const cx = Math.round(x / CHUNK_SIZE);
+        const cz = Math.round(z / CHUNK_SIZE);
+        const key = `${cx},${cz}`;
+        const chunk = this.chunks.get(key);
+        if (!chunk) return 0;
+
+        const H = HIGHWAY_HEIGHT;
+        const localX = x - cx * CHUNK_SIZE; // -CHUNK_SIZE/2 to CHUNK_SIZE/2
+        const localZ = z - cz * CHUNK_SIZE;
+
+        // Check if vehicle is within the highway/ramp footprint width
+        const W = HIGHWAY_WIDTH;
+        const isOnDeck = (dir) => {
+            if (dir === 'ns') return Math.abs(localX) < W / 2 + 0.5;
+            return Math.abs(localZ) < W / 2 + 0.5;
+        };
+
+        switch (chunk.type) {
+            case CHUNK_HIGHWAY_NS:
+                return isOnDeck('ns') ? H : 0;
+            case CHUNK_HIGHWAY_EW:
+                return isOnDeck('ew') ? H : 0;
+            case CHUNK_RAMP_UP_NS: {
+                if (!isOnDeck('ns')) return 0;
+                const t = (localZ + CHUNK_SIZE / 2) / CHUNK_SIZE;
+                return t * H;
+            }
+            case CHUNK_RAMP_DOWN_NS: {
+                if (!isOnDeck('ns')) return 0;
+                const t = (localZ + CHUNK_SIZE / 2) / CHUNK_SIZE;
+                return (1 - t) * H;
+            }
+            case CHUNK_RAMP_UP_EW: {
+                if (!isOnDeck('ew')) return 0;
+                const t = (localX + CHUNK_SIZE / 2) / CHUNK_SIZE;
+                return t * H;
+            }
+            case CHUNK_RAMP_DOWN_EW: {
+                if (!isOnDeck('ew')) return 0;
+                const t = (localX + CHUNK_SIZE / 2) / CHUNK_SIZE;
+                return (1 - t) * H;
+            }
+            default:
+                return 0;
+        }
     }
 
     /* ── Palette cycling ── */

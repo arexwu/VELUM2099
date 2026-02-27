@@ -28,6 +28,7 @@ export class Vehicle {
         this.handbrake = false;
         this.drifting = false;
         this._driftAngle = 0;     // visual body rotation offset during drift
+        this.groundY = 0;         // current ground height (set externally)
 
         // Constants — tuned to feel like a light FR coupe
         this.maxSpeed = 55;       // m/s (~198 km/h)
@@ -393,6 +394,10 @@ export class Vehicle {
 
         this._right.set(1, 0, 0).applyEuler(this.rotation);
         this.position.addScaledVector(this._right, this.lateralVelocity * dt);
+
+        // Smoothly track ground height (set externally by main loop)
+        const ySmooth = 1 - Math.exp(-12 * dt);
+        this.position.y += (this.groundY - this.position.y) * ySmooth;
 
         // Update mesh position
         this.group.position.copy(this.position);
