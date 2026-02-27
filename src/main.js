@@ -57,14 +57,14 @@ class _ScrollText {
     constructor() {
         this._active = [];
         this._timer = 0;
-        this._nextDelay = 1 + Math.random() * 2;
+        this._nextDelay = 3 + Math.random() * 5;
     }
 
     update(dt) {
         this._timer += dt;
         if (this._timer >= this._nextDelay) {
             this._timer = 0;
-            this._nextDelay = 1.5 + Math.random() * 3;
+            this._nextDelay = 4 + Math.random() * 8;
             this._spawn();
         }
         for (let i = this._active.length - 1; i >= 0; i--) {
