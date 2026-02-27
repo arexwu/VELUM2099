@@ -25,6 +25,7 @@ class App {
         this.running = false;
         this._animFrameId = null;
         this._captureRequested = false;
+        this._vhsEl = document.getElementById('vhs-timestamp');
 
         this._init();
     }
@@ -90,6 +91,9 @@ class App {
         };
         window.addEventListener('keydown', this._captureKeyHandler);
 
+        // Show VHS timestamp
+        if (this._vhsEl) this._vhsEl.style.display = 'block';
+
         // Start game loop
         this.running = true;
         this._lastTime = performance.now();
@@ -108,8 +112,12 @@ class App {
         // Update vehicle physics
         this.vehicle.update(dt);
 
+        // Collision detection
+        const collidables = this.scene.getCollidables(this.vehicle.position, 30);
+        this.vehicle.checkCollisions(collidables, dt);
+
         // Update scene (camera, rain, neon flicker, post-processing render)
-        this.scene.update(this.vehicle.position, this.vehicle.rotation);
+        this.scene.update(this.vehicle.position, this.vehicle.rotation, dt);
 
         // Segmentation
         const mask = this.segmenter.processFrame(this.canvasEl);
@@ -122,6 +130,15 @@ class App {
             this._captureRequested
         );
         this._captureRequested = false;
+
+        // VHS timestamp
+        if (this._vhsEl) {
+            const d = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const date = `${pad(d.getMonth() + 1)}.${pad(d.getDate())}.${d.getFullYear()}`;
+            const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            this._vhsEl.innerHTML = `<span class="rec-dot"></span>REC  ${date}  ${time}\nPLAY  \u25B6`;
+        }
 
         this._animFrameId = requestAnimationFrame(() => this._gameLoop());
     }
@@ -142,8 +159,9 @@ class App {
         // Stop recording
         this.collector.stopSession();
 
-        // Hide canvas, show terminal
+        // Hide canvas and VHS overlay, show terminal
         this.canvasEl.style.display = 'none';
+        if (this._vhsEl) this._vhsEl.style.display = 'none';
         this.terminal.show();
     }
 

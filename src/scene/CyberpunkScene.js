@@ -46,13 +46,54 @@ const RetroShader = {
   `,
 };
 
-/* ── Neon palette ── */
-const NEON = {
-    pink: 0xff0080, cyan: 0x00ffff, purple: 0xaa00ff,
-    yellow: 0xffff00, green: 0x00ff66, orange: 0xff6600, blue: 0x0066ff,
-};
-const NEON_COLORS = Object.values(NEON);
-function randomNeon() { return NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)]; }
+/* ── Cyberpunk palettes ── */
+const PALETTES = [
+    {   // Classic Cyber — pink/cyan
+        neons: [0xff0080, 0x00ffff, 0xaa00ff, 0xffff00, 0x00ff66, 0xff6600, 0x0066ff],
+        fog: 0x1a1a3a, rain: 0x8888cc,
+        vehicleLight: 0x00ffff, fillLight: 0xff6633,
+        skyLo: [0.08, 0.03, 0.14], skyHi: [0.02, 0.02, 0.08], skyGlow: [0.6, 0.1, 0.35],
+    },
+    {   // Toxic Neon — green/yellow/lime
+        neons: [0x39ff14, 0xccff00, 0x00ff66, 0xffff00, 0x88ff00, 0x00ffaa, 0x66ff33],
+        fog: 0x0a1a0a, rain: 0x66cc88,
+        vehicleLight: 0x39ff14, fillLight: 0xccff00,
+        skyLo: [0.02, 0.08, 0.02], skyHi: [0.01, 0.04, 0.01], skyGlow: [0.1, 0.5, 0.05],
+    },
+    {   // Bloodline — red/orange/crimson
+        neons: [0xff0033, 0xff4400, 0xff0066, 0xff6600, 0xcc0022, 0xff2200, 0xff8800],
+        fog: 0x1a0a0a, rain: 0xcc6666,
+        vehicleLight: 0xff4400, fillLight: 0xff0033,
+        skyLo: [0.12, 0.02, 0.02], skyHi: [0.06, 0.01, 0.01], skyGlow: [0.7, 0.1, 0.05],
+    },
+    {   // Ice — blue/white/silver
+        neons: [0x00aaff, 0x88ddff, 0x0066ff, 0xaaeeff, 0x4488ff, 0x00ccff, 0xffffff],
+        fog: 0x0a1a2a, rain: 0xaaccff,
+        vehicleLight: 0x88ddff, fillLight: 0x0066ff,
+        skyLo: [0.03, 0.06, 0.14], skyHi: [0.01, 0.03, 0.08], skyGlow: [0.1, 0.2, 0.6],
+    },
+    {   // Synthwave — magenta/purple/hot pink
+        neons: [0xff00ff, 0xcc00ff, 0xff0099, 0xff44cc, 0xaa00ff, 0xff66ff, 0xdd00aa],
+        fog: 0x1a0a2a, rain: 0xbb88dd,
+        vehicleLight: 0xff00ff, fillLight: 0xcc00ff,
+        skyLo: [0.10, 0.02, 0.14], skyHi: [0.04, 0.01, 0.08], skyGlow: [0.5, 0.05, 0.6],
+    },
+    {   // Gold Rush — gold/amber/warm white
+        neons: [0xffaa00, 0xffcc33, 0xff8800, 0xffdd44, 0xffee66, 0xeeaa00, 0xffbb11],
+        fog: 0x1a1508, rain: 0xccbb88,
+        vehicleLight: 0xffcc33, fillLight: 0xff8800,
+        skyLo: [0.10, 0.07, 0.02], skyHi: [0.05, 0.03, 0.01], skyGlow: [0.6, 0.4, 0.05],
+    },
+    {   // Light Cyber — pastel neon on pale sky
+        neons: [0xff66aa, 0x66ddff, 0xbb77ff, 0x77ffcc, 0xffaa66, 0xff77dd, 0x66aaff],
+        fog: 0xc8c0d8, rain: 0xaabbdd,
+        vehicleLight: 0x66ddff, fillLight: 0xff66aa,
+        skyLo: [0.65, 0.58, 0.72], skyHi: [0.50, 0.55, 0.70], skyGlow: [0.75, 0.45, 0.60],
+    },
+];
+
+let _activePalette = PALETTES[0];
+function randomNeon() { return _activePalette.neons[Math.floor(Math.random() * _activePalette.neons.length)]; }
 
 /* ── Grid constants ── */
 const CHUNK_SIZE = 60;          // world units per chunk
@@ -87,6 +128,8 @@ export class CyberpunkScene {
         this.signs = [];
         this.trafficVehicles = [];  // oncoming traffic objects
         this.rainDrops = null;
+        this._paletteIndex = 0;
+        this._paletteTimer = 0;
 
         this._initRenderer();
         this._initScene();
@@ -299,7 +342,8 @@ export class CyberpunkScene {
         // Edge neon strips
         for (const s of [-1, 1]) {
             const eGeo = new THREE.BoxGeometry(0.12, 0.08, CHUNK_SIZE);
-            const eMat = new THREE.MeshBasicMaterial({ color: s === -1 ? NEON.cyan : NEON.pink });
+            const eMat = new THREE.MeshBasicMaterial({ color: s === -1 ? _activePalette.neons[1] : _activePalette.neons[0] });
+            eMat._isNeon = true;
             const edge = new THREE.Mesh(eGeo, eMat);
             edge.position.set(wx + s * (ROAD_WIDTH / 2 + 0.1), 0.04, wz);
             group.add(edge);
@@ -329,7 +373,8 @@ export class CyberpunkScene {
 
         for (const s of [-1, 1]) {
             const eGeo = new THREE.BoxGeometry(CHUNK_SIZE, 0.08, 0.12);
-            const eMat = new THREE.MeshBasicMaterial({ color: s === -1 ? NEON.cyan : NEON.pink });
+            const eMat = new THREE.MeshBasicMaterial({ color: s === -1 ? _activePalette.neons[1] : _activePalette.neons[0] });
+            eMat._isNeon = true;
             const edge = new THREE.Mesh(eGeo, eMat);
             edge.position.set(wx, 0.04, wz + s * (ROAD_WIDTH / 2 + 0.1));
             group.add(edge);
@@ -382,8 +427,10 @@ export class CyberpunkScene {
             );
             collidables.push({ box: poleBox, mesh: pole, type: 'pole' });
 
-            const color = i === 0 ? 0x00ffff : 0xff0080;
-            const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), new THREE.MeshBasicMaterial({ color }));
+            const color = i === 0 ? _activePalette.neons[1] : _activePalette.neons[0];
+            const lampMat = new THREE.MeshBasicMaterial({ color });
+            lampMat._isNeon = true;
+            const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), lampMat);
             lamp.position.set(p.x, 7.1, p.z);
             group.add(lamp);
         });
@@ -502,6 +549,7 @@ export class CyberpunkScene {
             if (seededRandom(cx, cz, 300 + idx + ey) < 0.4) continue;
             const geo = new THREE.BoxGeometry(w + 0.1, 0.06, 0.06);
             const mat = new THREE.MeshBasicMaterial({ color });
+            mat._isNeon = true;
             const line = new THREE.Mesh(geo, mat);
             line.position.set(building.position.x, building.position.y + ey - h / 2, building.position.z);
             this.scene.add(line);
@@ -538,6 +586,7 @@ export class CyberpunkScene {
             const bbMat = new THREE.MeshBasicMaterial({
                 color: randomNeon(), transparent: true, opacity: 0.8,
             });
+            bbMat._isNeon = true;
             const bb = new THREE.Mesh(bbGeo, bbMat);
             bb.position.set(faceX, building.position.y + seededRandom(cx, cz, 730 + idx) * h * 0.2, building.position.z);
             bb.rotation.y = faceSide < 0 ? Math.PI / 2 : -Math.PI / 2;
@@ -764,15 +813,23 @@ export class CyberpunkScene {
 
     /* ── Skybox ── */
     _buildSkybox() {
+        const p = _activePalette;
         const geo = new THREE.SphereGeometry(600, 32, 32);
+        this._skyUniforms = {
+            skyLo: { value: new THREE.Vector3(...p.skyLo) },
+            skyHi: { value: new THREE.Vector3(...p.skyHi) },
+            skyGlow: { value: new THREE.Vector3(...p.skyGlow) },
+        };
         const mat = new THREE.ShaderMaterial({
-            side: THREE.BackSide, uniforms: {},
+            side: THREE.BackSide,
+            uniforms: this._skyUniforms,
             vertexShader: `varying vec3 vWP; void main(){ vWP=(modelMatrix*vec4(position,1.0)).xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-            fragmentShader: `varying vec3 vWP; void main(){
+            fragmentShader: `
+        uniform vec3 skyLo; uniform vec3 skyHi; uniform vec3 skyGlow;
+        varying vec3 vWP; void main(){
         float h=normalize(vWP).y;
-        vec3 lo=vec3(0.08,0.03,0.14); vec3 hi=vec3(0.02,0.02,0.08);
-        vec3 c=mix(lo,hi,smoothstep(-0.1,0.5,h));
-        float g=exp(-abs(h)*8.0)*0.35; c+=vec3(0.6,0.1,0.35)*g;
+        vec3 c=mix(skyLo,skyHi,smoothstep(-0.1,0.5,h));
+        float g=exp(-abs(h)*8.0)*0.35; c+=skyGlow*g;
         gl_FragColor=vec4(c,1.0);
       }`,
         });
@@ -832,13 +889,64 @@ export class CyberpunkScene {
         return result;
     }
 
+    /* ── Palette cycling ── */
+
+    _applyPalette(palette) {
+        _activePalette = palette;
+
+        // Fog
+        this.scene.fog.color.set(palette.fog);
+
+        // Vehicle-following lights
+        this._vehicleLight.color.set(palette.vehicleLight);
+        this._fillLight.color.set(palette.fillLight);
+
+        // Rain
+        if (this.rainDrops) {
+            this.rainDrops.material.color.set(palette.rain);
+        }
+
+        // Skybox uniforms
+        if (this._skyUniforms) {
+            this._skyUniforms.skyLo.value.set(...palette.skyLo);
+            this._skyUniforms.skyHi.value.set(...palette.skyHi);
+            this._skyUniforms.skyGlow.value.set(...palette.skyGlow);
+        }
+
+        // Recolor all neon-tagged materials in loaded chunks
+        const recolorMat = (mat) => {
+            if (mat && mat._isNeon) {
+                mat.color.set(palette.neons[Math.floor(Math.random() * palette.neons.length)]);
+            }
+        };
+
+        for (const [, chunk] of this.chunks) {
+            chunk.group.traverse(child => {
+                if (child.material) {
+                    if (Array.isArray(child.material)) child.material.forEach(recolorMat);
+                    else recolorMat(child.material);
+                }
+            });
+            for (const m of chunk.meshes) {
+                if (m.material) recolorMat(m.material);
+            }
+        }
+    }
+
     /* ═══════════════════════════════════════
        UPDATE — called every frame
        ═══════════════════════════════════════ */
 
-    update(vehiclePos, vehicleRot) {
-        const dt = this.clock.getDelta();
+    update(vehiclePos, vehicleRot, dt) {
         const elapsed = this.clock.getElapsedTime();
+
+        // Palette cycling — swap every 10 seconds
+        this._paletteTimer += dt;
+        if (this._paletteTimer >= 10) {
+            this._paletteTimer = 0;
+            this._paletteIndex = (this._paletteIndex + 1) % PALETTES.length;
+            this._applyPalette(PALETTES[this._paletteIndex]);
+        }
 
         // Chunk management
         this._updateChunks(vehiclePos.x, vehiclePos.z);
