@@ -6,6 +6,20 @@ export default defineConfig({
     open: false
   },
   build: {
-    outDir: 'dist'
-  }
+    outDir: 'dist',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'three-core': ['three'],
+          'three-post': [
+            'three/addons/postprocessing/EffectComposer.js',
+            'three/addons/postprocessing/RenderPass.js',
+            'three/addons/postprocessing/UnrealBloomPass.js',
+            'three/addons/postprocessing/ShaderPass.js',
+            'three/addons/shaders/FXAAShader.js',
+          ],
+        },
+      },
+    },
+  },
 });

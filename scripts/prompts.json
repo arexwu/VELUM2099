@@ -1,0 +1,53 @@
+{
+  "model": "stabilityai/sd-turbo",
+  "common": {
+    "negative_prompt": "blurry, low quality, watermark, text, signature",
+    "guidance_scale": 1.0,
+    "num_inference_steps": 2
+  },
+  "textures": {
+    "buildings": {
+      "count": 4,
+      "size": [512, 1024],
+      "strength": 0.7,
+      "prompt": "cyberpunk building facade, dark concrete, neon window grid, grungy, desaturated, seamless tileable, architectural detail, sci-fi",
+      "base_pattern": "window_grid",
+      "output_prefix": "facade"
+    },
+    "roads": {
+      "road_atlas": {
+        "size": [1024, 512],
+        "strength": 0.65,
+        "prompt": "wet asphalt road surface, puddle reflections, tire marks, urban highway, desaturated, seamless tileable, top-down view"
+      },
+      "road_wet": {
+        "size": [1024, 512],
+        "strength": 0.6,
+        "prompt": "rain-soaked asphalt, heavy puddles, neon reflections on wet surface, dark urban road, desaturated, seamless tileable"
+      }
+    },
+    "billboards": {
+      "size": [1024, 512],
+      "grid": [4, 2],
+      "strength": 0.75,
+      "prompt": "neon holographic advertisement, cyberpunk billboard, glitch art, high contrast, vivid colors, futuristic brand logo",
+      "note": "Full-color, not desaturated. Each cell gets a unique seed."
+    },
+    "ground": {
+      "size": [512, 512],
+      "strength": 0.65,
+      "prompt": "concrete sidewalk, cracked pavement, dark grey, small puddles, urban grime, seamless tileable, top-down view"
+    },
+    "windows": {
+      "size": [512, 512],
+      "grid": [8, 8],
+      "strength": 0.7,
+      "prompt": "cyberpunk apartment windows at night, interior warm glow, blinds, silhouettes, desaturated, variety of lighting states"
+    }
+  },
+  "live_mode": {
+    "prompt": "cyberpunk neon city, rain reflections, cinematic, dark atmosphere",
+    "strength": 0.4,
+    "note": "Light stylization to preserve scene structure for real-time img2img"
+  }
+}

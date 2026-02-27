@@ -5,14 +5,30 @@
    ═══════════════════════════════════════════ */
 
 import { Terminal } from './terminal/Terminal.js';
-import { CyberpunkScene } from './scene/CyberpunkScene.js';
-import { Vehicle } from './vehicle/Vehicle.js';
-import { Segmenter } from './segmentation/Segmenter.js';
-import { DataCollector } from './data/DataCollector.js';
-import { Exporter } from './data/Exporter.js';
-import { TextureManager } from './textures/TextureManager.js';
-import { LiveStreamClient } from './textures/LiveStreamClient.js';
-import { LofiRadio } from './audio/LofiRadio.js';
+
+// Heavy simulation modules — lazy-loaded on first simulation start
+let CyberpunkScene, Vehicle, Segmenter, DataCollector, Exporter, TextureManager, LiveStreamClient, LofiRadio;
+async function loadSimModules() {
+    if (CyberpunkScene) return; // already loaded
+    const [scene, vehicle, seg, dc, exp, tm, lsc, radio] = await Promise.all([
+        import('./scene/CyberpunkScene.js'),
+        import('./vehicle/Vehicle.js'),
+        import('./segmentation/Segmenter.js'),
+        import('./data/DataCollector.js'),
+        import('./data/Exporter.js'),
+        import('./textures/TextureManager.js'),
+        import('./textures/LiveStreamClient.js'),
+        import('./audio/LofiRadio.js'),
+    ]);
+    CyberpunkScene = scene.CyberpunkScene;
+    Vehicle = vehicle.Vehicle;
+    Segmenter = seg.Segmenter;
+    DataCollector = dc.DataCollector;
+    Exporter = exp.Exporter;
+    TextureManager = tm.TextureManager;
+    LiveStreamClient = lsc.LiveStreamClient;
+    LofiRadio = radio.LofiRadio;
+}
 
 /* ── Scrolling Chinese text overlay ── */
 const _SCROLL_PHRASES = [
@@ -108,8 +124,8 @@ class App {
         this.terminal = new Terminal(this.terminalEl);
         this.scene = null;
         this.vehicle = null;
-        this.segmenter = new Segmenter();
-        this.collector = new DataCollector();
+        this.segmenter = null;
+        this.collector = null;
 
         this.running = false;
         this._animFrameId = null;
@@ -132,9 +148,13 @@ class App {
         // Start the terminal boot sequence
         await this.terminal.show();
 
-        // Pre-init segmenter in background
-        this.segmenter.init().catch(err => {
-            console.warn('[Segmenter] 初始化警告:', err);
+        // Pre-load simulation modules in background while user sees the terminal
+        loadSimModules().then(() => {
+            this.segmenter = new Segmenter();
+            this.collector = new DataCollector();
+            this.segmenter.init().catch(err => {
+                console.warn('[Segmenter] 初始化警告:', err);
+            });
         });
     }
 
@@ -153,6 +173,11 @@ class App {
     }
 
     async _startSimulation() {
+        // Ensure simulation modules are loaded
+        await loadSimModules();
+        if (!this.segmenter) this.segmenter = new Segmenter();
+        if (!this.collector) this.collector = new DataCollector();
+
         // Hide terminal, show canvas
         this.terminal.hide();
         this.canvasEl.style.display = 'block';
@@ -351,6 +376,7 @@ class App {
     }
 
     _showSettings() {
+        if (!this.collector) return;
         // For now, toggle between manual and continuous mode via terminal feedback
         const currentMode = this.collector.mode;
         const newMode = currentMode === 'manual' ? 'continuous' : 'manual';
