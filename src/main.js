@@ -83,6 +83,10 @@ class App {
             if (e.code === 'Escape') {
                 this._stopSimulation();
             }
+            // Cycle palette with E
+            if (e.code === 'KeyE') {
+                this.scene.nextPalette();
+            }
             // Toggle continuous mode with T
             if (e.code === 'KeyT') {
                 const newMode = this.collector.mode === 'manual' ? 'continuous' : 'manual';

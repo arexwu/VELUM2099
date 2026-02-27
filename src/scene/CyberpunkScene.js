@@ -9,6 +9,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 
 /* ── Retro shader ── */
 const RetroShader = {
@@ -131,6 +132,11 @@ export class CyberpunkScene {
         this._paletteIndex = 0;
         this._paletteTimer = 0;
 
+        // Shared dash geometry/material for InstancedMesh road lines
+        this._dashGeoNS = new THREE.PlaneGeometry(0.15, 2);
+        this._dashGeoEW = new THREE.PlaneGeometry(2, 0.15);
+        this._dashMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+
         this._initRenderer();
         this._initScene();
         this._initCamera();
@@ -147,6 +153,7 @@ export class CyberpunkScene {
     _initRenderer() {
         this.renderer = new THREE.WebGLRenderer({
             canvas: this.canvas, antialias: false, powerPreference: 'high-performance',
+            logarithmicDepthBuffer: true,
         });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -329,15 +336,18 @@ export class CyberpunkScene {
         road.position.set(wx, 0.005, wz);
         group.add(road);
 
-        // Center line
-        for (let d = -CHUNK_SIZE / 2; d < CHUNK_SIZE / 2; d += 4) {
-            const dGeo = new THREE.PlaneGeometry(0.15, 2);
-            const dMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-            const dash = new THREE.Mesh(dGeo, dMat);
-            dash.rotation.x = -Math.PI / 2;
-            dash.position.set(wx, 0.02, wz + d);
-            group.add(dash);
+        // Center line (instanced)
+        const dashCountNS = Math.floor(CHUNK_SIZE / 4);
+        const dashesNS = new THREE.InstancedMesh(this._dashGeoNS, this._dashMat, dashCountNS);
+        const _mat4 = new THREE.Matrix4();
+        const _rotX = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+        for (let i = 0; i < dashCountNS; i++) {
+            const d = -CHUNK_SIZE / 2 + i * 4;
+            _mat4.makeTranslation(wx, 0.02, wz + d).multiply(_rotX);
+            dashesNS.setMatrixAt(i, _mat4);
         }
+        dashesNS.instanceMatrix.needsUpdate = true;
+        group.add(dashesNS);
 
         // Edge neon strips
         for (const s of [-1, 1]) {
@@ -361,15 +371,18 @@ export class CyberpunkScene {
         road.position.set(wx, 0.005, wz);
         group.add(road);
 
-        // Center line
-        for (let d = -CHUNK_SIZE / 2; d < CHUNK_SIZE / 2; d += 4) {
-            const dGeo = new THREE.PlaneGeometry(2, 0.15);
-            const dMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-            const dash = new THREE.Mesh(dGeo, dMat);
-            dash.rotation.x = -Math.PI / 2;
-            dash.position.set(wx + d, 0.02, wz);
-            group.add(dash);
+        // Center line (instanced)
+        const dashCountEW = Math.floor(CHUNK_SIZE / 4);
+        const dashesEW = new THREE.InstancedMesh(this._dashGeoEW, this._dashMat, dashCountEW);
+        const _mat4EW = new THREE.Matrix4();
+        const _rotXEW = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+        for (let i = 0; i < dashCountEW; i++) {
+            const d = -CHUNK_SIZE / 2 + i * 4;
+            _mat4EW.makeTranslation(wx + d, 0.02, wz).multiply(_rotXEW);
+            dashesEW.setMatrixAt(i, _mat4EW);
         }
+        dashesEW.instanceMatrix.needsUpdate = true;
+        group.add(dashesEW);
 
         for (const s of [-1, 1]) {
             const eGeo = new THREE.BoxGeometry(CHUNK_SIZE, 0.08, 0.12);
@@ -438,6 +451,50 @@ export class CyberpunkScene {
 
     /* ── Building generators ── */
 
+    _createBuildingGeo(w, h, d, cx, cz, seed) {
+        const r = seededRandom(cx, cz, seed);
+        const shape = new THREE.Shape();
+
+        if (r < 0.4) {
+            // Plain rectangle
+            shape.moveTo(-w / 2, -d / 2);
+            shape.lineTo(w / 2, -d / 2);
+            shape.lineTo(w / 2, d / 2);
+            shape.lineTo(-w / 2, d / 2);
+            shape.closePath();
+        } else if (r < 0.7) {
+            // L-shape — corner notch cut out
+            const notchW = w * (0.3 + seededRandom(cx, cz, seed + 1) * 0.2);
+            const notchD = d * (0.3 + seededRandom(cx, cz, seed + 2) * 0.2);
+            shape.moveTo(-w / 2, -d / 2);
+            shape.lineTo(w / 2, -d / 2);
+            shape.lineTo(w / 2, d / 2 - notchD);
+            shape.lineTo(w / 2 - notchW, d / 2 - notchD);
+            shape.lineTo(w / 2 - notchW, d / 2);
+            shape.lineTo(-w / 2, d / 2);
+            shape.closePath();
+        } else {
+            // Notched/stepped — inset on one side
+            const insetW = w * (0.2 + seededRandom(cx, cz, seed + 3) * 0.15);
+            const insetD = d * (0.25 + seededRandom(cx, cz, seed + 4) * 0.2);
+            shape.moveTo(-w / 2, -d / 2);
+            shape.lineTo(w / 2, -d / 2);
+            shape.lineTo(w / 2, -d / 2 + insetD);
+            shape.lineTo(w / 2 - insetW, -d / 2 + insetD);
+            shape.lineTo(w / 2 - insetW, d / 2);
+            shape.lineTo(-w / 2, d / 2);
+            shape.closePath();
+        }
+
+        const geo = new THREE.ExtrudeGeometry(shape, {
+            depth: h,
+            bevelEnabled: false,
+        });
+        // Extrude goes along Z — rotate so it goes along Y (upward)
+        geo.rotateX(-Math.PI / 2);
+        return geo;
+    }
+
     _buildSideBuildings(group, meshes, chunkSigns, wx, wz, dir, cx, cz, collidables) {
         const numPerSide = 2 + Math.floor(seededRandom(cx, cz, 10) * 3);
         for (const side of [-1, 1]) {
@@ -447,7 +504,7 @@ export class CyberpunkScene {
                 const h = 12 + seededRandom(cx, cz, 30 + side * 10 + i) * 55;
                 const d = 5 + seededRandom(cx, cz, 40 + side * 10 + i) * 8;
 
-                const bGeo = new THREE.BoxGeometry(w, h, d);
+                const bGeo = this._createBuildingGeo(w, h, d, cx, cz, 900 + side * 10 + i);
                 const bMat = new THREE.MeshStandardMaterial({
                     color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 50 + i) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 60 + i) * 0.12),
                     roughness: 0.75, metalness: 0.2,
@@ -486,7 +543,7 @@ export class CyberpunkScene {
                 const h = 15 + seededRandom(cx, cz, 120 + qi * 5 + i) * 50;
                 const d = 5 + seededRandom(cx, cz, 130 + qi * 5 + i) * 8;
 
-                const bGeo = new THREE.BoxGeometry(w, h, d);
+                const bGeo = this._createBuildingGeo(w, h, d, cx, cz, 950 + qi * 5 + i);
                 const bMat = new THREE.MeshStandardMaterial({
                     color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 140 + qi) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 150 + qi) * 0.12),
                     roughness: 0.75, metalness: 0.2,
@@ -518,7 +575,7 @@ export class CyberpunkScene {
             const h = 10 + seededRandom(cx, cz, 220 + i) * 60;
             const d = 5 + seededRandom(cx, cz, 230 + i) * 12;
 
-            const bGeo = new THREE.BoxGeometry(w, h, d);
+            const bGeo = this._createBuildingGeo(w, h, d, cx, cz, 980 + i);
             const bMat = new THREE.MeshStandardMaterial({
                 color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 240 + i) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 250 + i) * 0.12),
                 roughness: 0.75, metalness: 0.2,
@@ -841,6 +898,7 @@ export class CyberpunkScene {
         this.composer = new EffectComposer(this.renderer);
         this.composer.addPass(new RenderPass(this.scene, this.camera));
         this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.8, 0.4, 0.85));
+        this.composer.addPass(new SMAAPass(window.innerWidth, window.innerHeight));
         this.retroPass = new ShaderPass(RetroShader);
         this.composer.addPass(this.retroPass);
     }
@@ -931,6 +989,12 @@ export class CyberpunkScene {
                 if (m.material) recolorMat(m.material);
             }
         }
+    }
+
+    nextPalette() {
+        this._paletteTimer = 0;
+        this._paletteIndex = (this._paletteIndex + 1) % PALETTES.length;
+        this._applyPalette(PALETTES[this._paletteIndex]);
     }
 
     /* ═══════════════════════════════════════
