@@ -395,6 +395,7 @@ class App {
         this.scene.camHeight = s.cameraHeight;
 
         // Palette
+        this.scene.setPalettePool(s.paletteMode);
         this.scene.setPalette(s.palette);
 
         // Bloom — passes[1] is UnrealBloomPass

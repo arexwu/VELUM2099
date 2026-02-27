@@ -131,6 +131,7 @@ export class Terminal {
         // ── 视觉 / Visual ──
         this._addLine('  ▸ 视觉 / Visual', 'cyan');
         this._addLine(`    palette ............ ${PALETTE_NAMES[s.palette]} (${s.palette})`, 'yellow');
+        this._addLine(`    paletteMode ........ ${s.paletteMode}`, 'yellow');
         this._addLine(`    bloomStrength ...... ${s.bloomStrength}`, 'yellow');
         this._addLine(`    bloomThreshold ..... ${s.bloomThreshold}`, 'yellow');
         this._addLine(`    scanlines .......... ${s.scanlines ? 'ON' : 'OFF'}`, 'yellow');
@@ -390,6 +391,14 @@ export class Terminal {
                 break;
             }
 
+            case 'mode': {
+                if (arg === undefined) { this._addLine(`  当前: paletteMode = ${this._settings.get('paletteMode')}`, 'cyan'); break; }
+                const r = this._settings.set('paletteMode', arg);
+                if (r.ok) this._addLine(`  ✓ paletteMode → ${r.value}`, 'cyan');
+                else this._addLine(`  ✗ ${r.error}`, 'red');
+                break;
+            }
+
             case 'fov': {
                 if (arg === undefined) { this._addLine(`  当前: fov = ${this._settings.get('fov')}`, 'cyan'); break; }
                 const r = this._settings.set('fov', arg);
@@ -549,6 +558,7 @@ export class Terminal {
         this._addLine('  ╔═══ 命令列表 / COMMANDS ═══╗', 'cyan');
         this._addLine('');
         this._addLine('  /palette <0-6>         调色板 (Classic Cyber → Light Cyber)', 'dim');
+        this._addLine('  /mode <all|dark|light>  调色板模式 (循环范围)', 'dim');
         this._addLine('  /fov <50-110>          视场角', 'dim');
         this._addLine('  /cam <dist> [height]   相机距离/高度', 'dim');
         this._addLine('  /bloom <str> [thresh]  泛光强度/阈值', 'dim');

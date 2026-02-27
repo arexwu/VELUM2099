@@ -22,6 +22,7 @@ const DEFAULTS = {
     dataMode: 'manual',
     dataCaptureInterval: 5,
     radioVolume: 0.15,
+    paletteMode: 'all',
 };
 
 const RANGES = {
@@ -41,6 +42,7 @@ const RANGES = {
     dataMode:             { type: 'enum', values: ['manual', 'continuous'] },
     dataCaptureInterval:  { min: 1,    max: 60,   type: 'int' },
     radioVolume:          { min: 0,    max: 1,    type: 'float' },
+    paletteMode:          { type: 'enum', values: ['all', 'dark', 'light'] },
 };
 
 export class GameSettings {

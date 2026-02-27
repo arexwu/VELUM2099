@@ -158,6 +158,12 @@ const PALETTES = [
     },
 ];
 
+// Palette tone classification: dark vs light
+const PALETTE_TONE = ['dark', 'dark', 'dark', 'light', 'dark', 'light', 'light'];
+const DARK_PALETTES  = PALETTE_TONE.map((t, i) => t === 'dark'  ? i : -1).filter(i => i >= 0);
+const LIGHT_PALETTES = PALETTE_TONE.map((t, i) => t === 'light' ? i : -1).filter(i => i >= 0);
+const ALL_PALETTES   = PALETTES.map((_, i) => i);
+
 let _activePalette = PALETTES[0];
 function randomNeon() { return _activePalette.neons[Math.floor(Math.random() * _activePalette.neons.length)]; }
 
@@ -208,6 +214,7 @@ export class CyberpunkScene {
         this.rainDrops = null;
         this._paletteIndex = 0;
         this._paletteTimer = 0;
+        this._palettePool = ALL_PALETTES; // indices to cycle through
         this.camDist = 10;
         this.camHeight = 5;
 
@@ -1732,7 +1739,10 @@ export class CyberpunkScene {
 
     nextPalette() {
         this._paletteTimer = 0;
-        this._paletteIndex = (this._paletteIndex + 1) % PALETTES.length;
+        const pool = this._palettePool;
+        const curPos = pool.indexOf(this._paletteIndex);
+        const nextPos = (curPos + 1) % pool.length;
+        this._paletteIndex = pool[nextPos];
         this._applyPalette(PALETTES[this._paletteIndex]);
     }
 
@@ -1743,6 +1753,17 @@ export class CyberpunkScene {
         this._applyPalette(PALETTES[index]);
     }
 
+    setPalettePool(mode) {
+        if (mode === 'dark') this._palettePool = DARK_PALETTES;
+        else if (mode === 'light') this._palettePool = LIGHT_PALETTES;
+        else this._palettePool = ALL_PALETTES;
+        // If current palette isn't in the new pool, jump to the first one
+        if (!this._palettePool.includes(this._paletteIndex)) {
+            this._paletteIndex = this._palettePool[0];
+            this._applyPalette(PALETTES[this._paletteIndex]);
+        }
+    }
+
     /* ═══════════════════════════════════════
        UPDATE — called every frame
        ═══════════════════════════════════════ */
@@ -1750,11 +1771,14 @@ export class CyberpunkScene {
     update(vehiclePos, vehicleRot, dt) {
         const elapsed = this.clock.getElapsedTime();
 
-        // Palette cycling — swap every 10 seconds
+        // Palette cycling — swap every 10 seconds (respects palette pool)
         this._paletteTimer += dt;
         if (this._paletteTimer >= 10) {
             this._paletteTimer = 0;
-            this._paletteIndex = (this._paletteIndex + 1) % PALETTES.length;
+            const pool = this._palettePool;
+            const curPos = pool.indexOf(this._paletteIndex);
+            const nextPos = (curPos + 1) % pool.length;
+            this._paletteIndex = pool[nextPos];
             this._applyPalette(PALETTES[this._paletteIndex]);
         }
 
