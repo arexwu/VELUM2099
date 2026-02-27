@@ -82,6 +82,7 @@ export class Vehicle {
             color: AE86_WHITE, roughness: 0.35, metalness: 0.15,
             emissive: AE86_WHITE, emissiveIntensity: 0.12, // subtle self-glow for visibility
         });
+        this._bodyMat = whiteMat;
         const blackMat = new THREE.MeshStandardMaterial({
             color: AE86_BLACK, roughness: 0.5, metalness: 0.3,
         });

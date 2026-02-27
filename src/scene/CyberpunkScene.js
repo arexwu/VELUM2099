@@ -208,6 +208,8 @@ export class CyberpunkScene {
         this.rainDrops = null;
         this._paletteIndex = 0;
         this._paletteTimer = 0;
+        this.camDist = 10;
+        this.camHeight = 5;
 
         // Shared dash geometry/material for InstancedMesh road lines
         this._dashGeoNS = new THREE.PlaneGeometry(0.15, 2);
@@ -682,9 +684,10 @@ export class CyberpunkScene {
         dashes.instanceMatrix.needsUpdate = true;
         group.add(dashes);
 
-        // Concrete pillars (6 per chunk)
+        // Concrete pillars (6 per chunk) with bracket caps
         const pillarMat = new THREE.MeshStandardMaterial({ color: 0x555560, roughness: 0.8, metalness: 0.15 });
         const pillarGeo = new THREE.CylinderGeometry(0.4, 0.5, H, 8);
+        const capGeo = new THREE.BoxGeometry(1.5, 0.3, 1.5);
         for (let i = 0; i < 6; i++) {
             const along = -CHUNK_SIZE / 2 + CHUNK_SIZE * (i + 0.5) / 6;
             for (const s of [-1, 1]) {
@@ -695,6 +698,12 @@ export class CyberpunkScene {
                     pillar.position.set(wx + along, H / 2, wz + s * (W / 2 - 1));
                 }
                 group.add(pillar);
+
+                // Bracket cap where pillar meets deck
+                const cap = new THREE.Mesh(capGeo, pillarMat);
+                cap.position.copy(pillar.position);
+                cap.position.y = H - 0.15;
+                group.add(cap);
 
                 const pBox = new THREE.Box3().setFromCenterAndSize(
                     pillar.position,
@@ -798,61 +807,103 @@ export class CyberpunkScene {
         ramp.position.set(wx, 0.005, wz);
         group.add(ramp);
 
-        // Ramp underside slab (just a simple angled box — approximate)
-        const slabGeo = new THREE.BoxGeometry(
+        // Ramp underside — sloped plane matching ramp surface, offset down by slab thickness
+        const undersideGeo = new THREE.PlaneGeometry(
             dir === 'ns' ? W + 0.5 : CHUNK_SIZE,
-            0.3,
-            dir === 'ns' ? CHUNK_SIZE : W + 0.5
+            dir === 'ns' ? CHUNK_SIZE : W + 0.5,
+            dir === 'ns' ? 1 : segments,
+            dir === 'ns' ? segments : 1
         );
-        const slabMat = new THREE.MeshStandardMaterial({ color: 0x333340, roughness: 0.9 });
-        const slab = new THREE.Mesh(slabGeo, slabMat);
-        slab.position.set(wx, H / 2, wz);
-        // Tilt the slab to roughly match the ramp
-        if (dir === 'ns') {
-            slab.rotation.x = rampDir * Math.atan2(H, CHUNK_SIZE);
-        } else {
-            slab.rotation.z = -rampDir * Math.atan2(H, CHUNK_SIZE);
+        const uPosAttr = undersideGeo.attributes.position;
+        for (let i = 0; i < uPosAttr.count; i++) {
+            let t;
+            if (dir === 'ns') {
+                const y = uPosAttr.getY(i);
+                t = (y + CHUNK_SIZE / 2) / CHUNK_SIZE;
+            } else {
+                const x = uPosAttr.getX(i);
+                t = (x + CHUNK_SIZE / 2) / CHUNK_SIZE;
+            }
+            if (rampDir === -1) t = 1 - t;
+            const height = t * H - 0.4; // offset below the road surface
+            uPosAttr.setZ(i, uPosAttr.getZ(i) + height);
         }
+        uPosAttr.needsUpdate = true;
+        undersideGeo.computeVertexNormals();
+        // Flip normals so the underside faces downward
+        const uNormAttr = undersideGeo.attributes.normal;
+        for (let i = 0; i < uNormAttr.count; i++) {
+            uNormAttr.setXYZ(i,
+                -uNormAttr.getX(i),
+                -uNormAttr.getY(i),
+                -uNormAttr.getZ(i)
+            );
+        }
+        uNormAttr.needsUpdate = true;
+        // Reverse winding order for correct face culling
+        const uIdx = undersideGeo.index;
+        const uIdxArr = uIdx.array;
+        for (let i = 0; i < uIdxArr.length; i += 3) {
+            const tmp = uIdxArr[i];
+            uIdxArr[i] = uIdxArr[i + 2];
+            uIdxArr[i + 2] = tmp;
+        }
+        uIdx.needsUpdate = true;
+
+        const slabMat = new THREE.MeshStandardMaterial({ color: 0x333340, roughness: 0.9, side: THREE.DoubleSide });
+        const slab = new THREE.Mesh(undersideGeo, slabMat);
+        slab.rotation.x = -Math.PI / 2;
+        slab.position.set(wx, 0.005, wz);
         group.add(slab);
 
-        // Guard walls on both sides
+        // Guard walls on both sides — continuous tilted walls following the ramp slope
         const wallMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.7, metalness: 0.2 });
+        const rampAngle = Math.atan2(H, CHUNK_SIZE);
+        const wallLen = Math.sqrt(CHUNK_SIZE * CHUNK_SIZE + H * H);
         for (const s of [-1, 1]) {
-            // Simple wall boxes at ground and top — 4 segments along the ramp
-            for (let seg = 0; seg < 4; seg++) {
-                const t = (seg + 0.5) / 4;
+            const wGeo = new THREE.BoxGeometry(
+                dir === 'ns' ? 0.3 : wallLen,
+                0.8,
+                dir === 'ns' ? wallLen : 0.3
+            );
+            const wall = new THREE.Mesh(wGeo, wallMat);
+            if (dir === 'ns') {
+                wall.position.set(wx + s * (W / 2), H / 2 + 0.4, wz);
+            } else {
+                wall.position.set(wx, H / 2 + 0.4, wz + s * (W / 2));
+            }
+            if (dir === 'ns') {
+                wall.rotation.x = rampDir * rampAngle;
+            } else {
+                wall.rotation.z = -rampDir * rampAngle;
+            }
+            group.add(wall);
+
+            // Collision — 8 boxes along the ramp for accurate detection
+            for (let seg = 0; seg < 8; seg++) {
+                const t = (seg + 0.5) / 8;
                 const segH = (rampDir === 1 ? t : (1 - t)) * H;
-                const along = -CHUNK_SIZE / 2 + t * CHUNK_SIZE;
-
-                const wGeo = new THREE.BoxGeometry(
-                    dir === 'ns' ? 0.3 : CHUNK_SIZE / 4,
-                    0.8,
-                    dir === 'ns' ? CHUNK_SIZE / 4 : 0.3
-                );
-                const wall = new THREE.Mesh(wGeo, wallMat);
-                if (dir === 'ns') {
-                    wall.position.set(wx + s * (W / 2), segH + 0.4, wz + along);
-                } else {
-                    wall.position.set(wx + along, segH + 0.4, wz + s * (W / 2));
-                }
-                group.add(wall);
-
+                const segAlong = -CHUNK_SIZE / 2 + t * CHUNK_SIZE;
                 const wBox = new THREE.Box3().setFromCenterAndSize(
-                    wall.position.clone(),
                     new THREE.Vector3(
-                        dir === 'ns' ? 0.3 : CHUNK_SIZE / 4,
-                        0.8 + segH,
-                        dir === 'ns' ? CHUNK_SIZE / 4 : 0.3
+                        dir === 'ns' ? wx + s * (W / 2) : wx + segAlong,
+                        segH + 0.4,
+                        dir === 'ns' ? wz + segAlong : wz + s * (W / 2)
+                    ),
+                    new THREE.Vector3(
+                        dir === 'ns' ? 0.5 : CHUNK_SIZE / 8,
+                        1.5,
+                        dir === 'ns' ? CHUNK_SIZE / 8 : 0.5
                     )
                 );
                 collidables.push({ box: wBox, mesh: wall, type: 'barrier' });
             }
 
-            // Neon strip along the wall top
+            // Neon strip along the wall top — tilted to follow ramp
             const nGeo = new THREE.BoxGeometry(
-                dir === 'ns' ? 0.08 : CHUNK_SIZE,
+                dir === 'ns' ? 0.08 : wallLen,
                 0.05,
-                dir === 'ns' ? CHUNK_SIZE : 0.08
+                dir === 'ns' ? wallLen : 0.08
             );
             const nMat = new THREE.MeshBasicMaterial({
                 color: s === -1 ? _activePalette.neons[2] : _activePalette.neons[0]
@@ -864,11 +915,17 @@ export class CyberpunkScene {
             } else {
                 neon.position.set(wx, H / 2 + 0.85, wz + s * (W / 2));
             }
+            if (dir === 'ns') {
+                neon.rotation.x = rampDir * rampAngle;
+            } else {
+                neon.rotation.z = -rampDir * rampAngle;
+            }
             group.add(neon);
         }
 
-        // Support pillars (fewer than highway — 3 pairs)
+        // Support pillars (fewer than highway — 3 pairs) with bracket caps
         const pillarMat = new THREE.MeshStandardMaterial({ color: 0x555560, roughness: 0.8, metalness: 0.15 });
+        const rampCapGeo = new THREE.BoxGeometry(1.3, 0.25, 1.3);
         for (let i = 0; i < 3; i++) {
             const t = (i + 0.5) / 3;
             const along = -CHUNK_SIZE / 2 + t * CHUNK_SIZE;
@@ -883,6 +940,12 @@ export class CyberpunkScene {
                     pillar.position.set(wx + along, pillarH / 2, wz + s * (W / 2 - 1));
                 }
                 group.add(pillar);
+
+                // Bracket cap at top
+                const cap = new THREE.Mesh(rampCapGeo, pillarMat);
+                cap.position.copy(pillar.position);
+                cap.position.y = pillarH - 0.125;
+                group.add(cap);
             }
         }
 
@@ -1673,6 +1736,13 @@ export class CyberpunkScene {
         this._applyPalette(PALETTES[this._paletteIndex]);
     }
 
+    setPalette(index) {
+        if (index < 0 || index >= PALETTES.length) return;
+        this._paletteTimer = 0;
+        this._paletteIndex = index;
+        this._applyPalette(PALETTES[index]);
+    }
+
     /* ═══════════════════════════════════════
        UPDATE — called every frame
        ═══════════════════════════════════════ */
@@ -1694,9 +1764,9 @@ export class CyberpunkScene {
         // Shader time
         this.retroPass.uniforms.time.value = elapsed;
 
-        // Vehicle lights follow
-        this._vehicleLight.position.set(vehiclePos.x, 8, vehiclePos.z - 5);
-        this._fillLight.position.set(vehiclePos.x + 5, 12, vehiclePos.z - 15);
+        // Vehicle lights follow (track vehicle elevation)
+        this._vehicleLight.position.set(vehiclePos.x, vehiclePos.y + 8, vehiclePos.z - 5);
+        this._fillLight.position.set(vehiclePos.x + 5, vehiclePos.y + 12, vehiclePos.z - 15);
 
         // Rain — GPU-driven, just update uniforms
         if (this.rainDrops) {
@@ -1720,13 +1790,13 @@ export class CyberpunkScene {
             }
         }
 
-        // Camera — chase behind vehicle based on its rotation
-        const camDist = 10;
-        const camHeight = 5;
+        // Camera — chase behind vehicle, accounting for vehicle elevation
+        const camDist = this.camDist;
+        const camHeight = this.camHeight;
         const maxCamLag = 3;
         const behindX = vehiclePos.x + Math.sin(vehicleRot.y) * camDist;
         const behindZ = vehiclePos.z + Math.cos(vehicleRot.y) * camDist;
-        this._camTarget.set(behindX, camHeight, behindZ);
+        this._camTarget.set(behindX, vehiclePos.y + camHeight, behindZ);
 
         // Smooth exponential follow (frame-rate independent)
         const smoothing = 1 - Math.exp(-8 * dt);
@@ -1741,7 +1811,7 @@ export class CyberpunkScene {
 
         this._lookTarget.set(
             vehiclePos.x - Math.sin(vehicleRot.y) * 12,
-            1.0,
+            vehiclePos.y + 1.0,
             vehiclePos.z - Math.cos(vehicleRot.y) * 12
         );
         this.camera.lookAt(this._lookTarget);

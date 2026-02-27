@@ -242,3 +242,23 @@
     50%  { opacity: 1; }
     100% { opacity: 0.97; }
 }
+
+/* Settings console input line */
+.term-input-line {
+    display: flex;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.term-input-line .prompt {
+    color: #0f0;
+    text-shadow: 0 0 5px #0f0;
+    margin-right: 8px;
+    white-space: pre;
+}
+
+.term-input-line .input-text {
+    color: #fff;
+    text-shadow: 0 0 5px #fff;
+    white-space: pre;
+}

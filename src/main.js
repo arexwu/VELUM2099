@@ -5,6 +5,7 @@
    ═══════════════════════════════════════════ */
 
 import { Terminal } from './terminal/Terminal.js';
+import { GameSettings } from './settings/GameSettings.js';
 
 // Heavy simulation modules — lazy-loaded on first simulation start
 let CyberpunkScene, Vehicle, Segmenter, DataCollector, Exporter, TextureManager, LiveStreamClient, LofiRadio;
@@ -121,6 +122,7 @@ class App {
         this.terminalEl = document.getElementById('terminal-screen');
         this.canvasEl = document.getElementById('game-canvas');
 
+        this.settings = new GameSettings();
         this.terminal = new Terminal(this.terminalEl);
         this.scene = null;
         this.vehicle = null;
@@ -167,7 +169,7 @@ class App {
                 this._exportData();
                 break;
             case 'settings':
-                this._showSettings();
+                this.terminal.enterSettingsMode(this.settings);
                 break;
         }
     }
@@ -202,6 +204,9 @@ class App {
             this.vehicle = new Vehicle(this.scene.scene);
         }
 
+        // Apply settings
+        this._applySettings();
+
         // Start data collection session
         this.collector.startSession();
 
@@ -231,7 +236,12 @@ class App {
             }
             // Toggle lo-fi radio with R
             if (e.code === 'KeyR') {
-                if (!this._radio) this._radio = new LofiRadio();
+                if (!this._radio) {
+                    this._radio = new LofiRadio();
+                    if (this._radioVolume !== undefined && this._radio._masterGain) {
+                        this._radio._masterGain.gain.value = this._radioVolume;
+                    }
+                }
                 const active = this._radio.toggle();
                 console.log(`[Radio] ${active ? '♪ ON' : 'OFF'}`);
                 this._updateRadioHud(active);
@@ -375,19 +385,47 @@ class App {
         }
     }
 
-    _showSettings() {
-        if (!this.collector) return;
-        // For now, toggle between manual and continuous mode via terminal feedback
-        const currentMode = this.collector.mode;
-        const newMode = currentMode === 'manual' ? 'continuous' : 'manual';
-        this.collector.setMode(newMode);
+    _applySettings() {
+        const s = this.settings.getAll();
 
-        // Add feedback line to terminal
-        const modeName = newMode === 'continuous' ? '连续采集' : '手动采集';
-        const feedbackEl = document.createElement('div');
-        feedbackEl.className = 'term-line yellow';
-        feedbackEl.textContent = `  ► 数据采集模式已切换为: ${modeName}`;
-        this.terminalEl.appendChild(feedbackEl);
+        // Camera
+        this.scene.camera.fov = s.fov;
+        this.scene.camera.updateProjectionMatrix();
+        this.scene.camDist = s.cameraDistance;
+        this.scene.camHeight = s.cameraHeight;
+
+        // Palette
+        this.scene.setPalette(s.palette);
+
+        // Bloom — passes[1] is UnrealBloomPass
+        const bloomPass = this.scene.composer.passes[1];
+        if (bloomPass) {
+            bloomPass.strength = s.bloomStrength;
+            bloomPass.threshold = s.bloomThreshold;
+        }
+
+        // Retro shader (scanlines + chromatic aberration)
+        if (this.scene.retroPass) {
+            this.scene.retroPass.uniforms.scanlineIntensity.value = s.scanlines ? 0.06 : 0;
+            this.scene.retroPass.uniforms.chromaticAberration.value = s.chromaticAberration;
+        }
+
+        // Vehicle
+        this.vehicle.maxSpeed = s.maxSpeed;
+        this.vehicle.driftLateralKick = s.driftKick;
+        if (this.vehicle._bodyMat) {
+            this.vehicle._bodyMat.emissiveIntensity = s.vehicleEmissive;
+        }
+        if (this.vehicle._underglow) {
+            this.vehicle._underglow.material.color.set(s.neonUnderglow);
+        }
+
+        // Data collection
+        this.collector.setMode(s.dataMode);
+        this.collector.continuousInterval = s.dataCaptureInterval;
+
+        // Radio volume (applied when radio starts)
+        this._radioVolume = s.radioVolume;
     }
 }
 
