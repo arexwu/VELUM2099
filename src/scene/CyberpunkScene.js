@@ -1607,7 +1607,10 @@ export class CyberpunkScene {
         const bh = 1.2;
         const bd = dir === 'ns' ? 0.5 : 4;
         const barrierGeo = new THREE.BoxGeometry(bw, bh, bd);
-        const barrierMat = new THREE.MeshStandardMaterial({ color: 0xffaa00, roughness: 0.6 });
+        const barrierMat = new THREE.MeshStandardMaterial({
+            color: 0xffaa00, roughness: 0.6,
+            emissive: 0xffaa00, emissiveIntensity: 0.7,
+        });
         const barrier = new THREE.Mesh(barrierGeo, barrierMat);
         if (dir === 'ns') {
             barrier.position.set(wx + laneOffset, 0.6, wz + alongOffset);
@@ -1640,9 +1643,24 @@ export class CyberpunkScene {
         light.position.y = 1.4;
         group.add(light);
 
+        // Neon glow strip along the top of the barrier
+        const glowStripGeo = new THREE.BoxGeometry(
+            dir === 'ns' ? bw + 0.05 : 0.08,
+            0.06,
+            dir === 'ns' ? 0.08 : bd + 0.05
+        );
+        const glowStripMat = new THREE.MeshBasicMaterial({ color: 0xffdd00 });
+        const glowStrip = new THREE.Mesh(glowStripGeo, glowStripMat);
+        glowStrip.position.copy(barrier.position);
+        glowStrip.position.y = barrier.position.y + bh / 2 + 0.03;
+        group.add(glowStrip);
+
         // Cones on either side
         const coneGeo = new THREE.ConeGeometry(0.2, 0.6, 8);
-        const coneMat = new THREE.MeshStandardMaterial({ color: 0xff6600 });
+        const coneMat = new THREE.MeshStandardMaterial({
+            color: 0xff6600,
+            emissive: 0xff4400, emissiveIntensity: 0.8,
+        });
         for (const cOffset of [-2.5, 2.5]) {
             const cone = new THREE.Mesh(coneGeo, coneMat);
             if (dir === 'ns') {
@@ -1665,9 +1683,11 @@ export class CyberpunkScene {
         // Simple box car driving in opposite lane
         const carGeo = new THREE.BoxGeometry(1.8, 0.7, 3.5);
         const carColors = [0xcc0000, 0x0044cc, 0x008800, 0xcccc00, 0xff6600];
+        const pickedCarColor = carColors[Math.floor(seededRandom(cx, cz, 850) * carColors.length)];
         const carMat = new THREE.MeshStandardMaterial({
-            color: carColors[Math.floor(seededRandom(cx, cz, 850) * carColors.length)],
+            color: pickedCarColor,
             roughness: 0.4, metalness: 0.5,
+            emissive: pickedCarColor, emissiveIntensity: 0.35,
         });
         const car = new THREE.Mesh(carGeo, carMat);
 
@@ -1701,11 +1721,21 @@ export class CyberpunkScene {
 
         // Neon underglow
         const ugGeo = new THREE.PlaneGeometry(2, 4);
-        const ugMat = new THREE.MeshBasicMaterial({ color: randomNeon(), transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+        const neonCol = randomNeon();
+        const ugMat = new THREE.MeshBasicMaterial({ color: neonCol, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
         const ug = new THREE.Mesh(ugGeo, ugMat);
         ug.rotation.x = -Math.PI / 2;
         ug.position.y = -0.3;
         car.add(ug);
+
+        // Neon side accent strips (always-visible neon trim)
+        const accentMat = new THREE.MeshBasicMaterial({ color: neonCol });
+        for (const sx of [-0.91, 0.91]) {
+            const stripGeo = new THREE.BoxGeometry(0.04, 0.04, 3.4);
+            const strip = new THREE.Mesh(stripGeo, accentMat);
+            strip.position.set(sx, 0.05, 0);
+            car.add(strip);
+        }
 
         const lane = 7; // oncoming lane
         const startZ = (seededRandom(cx, cz, 860) - 0.5) * CHUNK_SIZE * 0.8;
