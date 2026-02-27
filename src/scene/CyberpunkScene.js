@@ -625,7 +625,7 @@ export class CyberpunkScene {
 
             const poleBox = new THREE.Box3().setFromCenterAndSize(
                 new THREE.Vector3(p.x, 3.5, p.z),
-                new THREE.Vector3(0.5, 7, 0.5)
+                new THREE.Vector3(0.2, 7, 0.2)
             );
             collidables.push({ box: poleBox, mesh: pole, type: 'pole' });
 
