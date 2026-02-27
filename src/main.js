@@ -13,6 +13,80 @@ import { Exporter } from './data/Exporter.js';
 import { TextureManager } from './textures/TextureManager.js';
 import { LiveStreamClient } from './textures/LiveStreamClient.js';
 
+/* ── Scrolling Chinese text overlay ── */
+const _SCROLL_PHRASES = [
+    '神经网络同步中 ░░░░░░░░░░',
+    '警告：未授权访问检测',
+    '记忆碎片重组 ██████░░░░',
+    '数据流加密传输中',
+    '目标锁定 — 追踪协议启动',
+    '城市基础设施扫描完成',
+    '生体认证失败 — 重试中',
+    '黑客入侵防御系统激活',
+    '量子解密进度 47.3%',
+    '虚拟现实界面校准',
+    '信号干扰源定位中',
+    '自动驾驶模块 v7.82 已加载',
+    '街道监控网络接入',
+    '义体改造数据同步',
+    '电子战反制措施部署',
+    '地下网络节点连接建立',
+    '意识上传协议 — 待命',
+    '区域封锁解除 — 通行许可',
+    '合成记忆写入 ████████░░',
+    '赛博空间坐标校正中',
+    '隐形伪装场已激活',
+    '全息投影系统正常运行',
+    '深层网络扫描 — 无异常',
+    '加速世界接口同步完成',
+];
+
+class _ScrollText {
+    constructor() {
+        this._active = [];
+        this._timer = 0;
+        this._nextDelay = 3 + Math.random() * 5;
+    }
+
+    update(dt) {
+        this._timer += dt;
+        if (this._timer >= this._nextDelay) {
+            this._timer = 0;
+            this._nextDelay = 4 + Math.random() * 8;
+            this._spawn();
+        }
+        for (let i = this._active.length - 1; i >= 0; i--) {
+            const s = this._active[i];
+            s.x += s.speed * dt;
+            s.el.style.transform = `translateX(${s.x}px)`;
+            if (s.x > window.innerWidth + 100) {
+                s.el.remove();
+                this._active.splice(i, 1);
+            }
+        }
+    }
+
+    _spawn() {
+        const el = document.createElement('div');
+        const phrase = _SCROLL_PHRASES[Math.floor(Math.random() * _SCROLL_PHRASES.length)];
+        el.textContent = phrase;
+        const y = 30 + Math.random() * (window.innerHeight - 80);
+        const size = 14 + Math.floor(Math.random() * 10);
+        const opacity = 0.25 + Math.random() * 0.35;
+        const hue = [0, 180, 270, 60, 120][Math.floor(Math.random() * 5)];
+        el.style.cssText = `position:fixed;top:${y}px;left:0;font-family:'VT323',monospace;font-size:${size}px;color:hsla(${hue},100%,65%,${opacity});white-space:nowrap;pointer-events:none;z-index:150;text-shadow:0 0 8px hsla(${hue},100%,50%,0.4);letter-spacing:2px;`;
+        document.body.appendChild(el);
+        const speed = 60 + Math.random() * 120;
+        this._active.push({ el, x: -el.offsetWidth - 20, speed });
+        el.style.transform = `translateX(${-el.offsetWidth - 20}px)`;
+    }
+
+    cleanup() {
+        for (const s of this._active) s.el.remove();
+        this._active.length = 0;
+    }
+}
+
 class App {
     constructor() {
         this.terminalEl = document.getElementById('terminal-screen');
@@ -133,6 +207,9 @@ class App {
         this._fpsFrames = 0;
         this._fpsTime = 0;
 
+        // Scrolling Chinese text overlay
+        if (!this._scrollText) this._scrollText = new _ScrollText();
+
         // Start game loop
         this.running = true;
         this._lastTime = performance.now();
@@ -181,6 +258,9 @@ class App {
             this._vhsEl.innerHTML = `<span class="rec-dot"></span>REC  ${date}  ${time}\nPLAY  \u25B6`;
         }
 
+        // Scrolling Chinese text
+        if (this._scrollText) this._scrollText.update(dt);
+
         // FPS counter
         this._fpsFrames++;
         this._fpsTime += dt;
@@ -214,6 +294,9 @@ class App {
 
         // Stop recording
         this.collector.stopSession();
+
+        // Clean up scrolling text
+        if (this._scrollText) this._scrollText.cleanup();
 
         // Hide canvas, VHS overlay, and FPS counter, show terminal
         this.canvasEl.style.display = 'none';
