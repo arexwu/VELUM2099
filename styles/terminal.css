@@ -243,6 +243,11 @@
     100% { opacity: 0.97; }
 }
 
+/* Overlay mode — console over running simulation */
+#terminal-screen.overlay-mode {
+    background: rgba(0, 0, 0, 0.88);
+}
+
 /* Settings console input line */
 .term-input-line {
     display: flex;

@@ -236,6 +236,11 @@ class App {
                 const active = this._liveClient.toggle();
                 console.log(`[LiveStream] ${active ? 'Connecting to server...' : 'Disconnected'}`);
             }
+            // Open settings console overlay with /
+            if (e.key === '/' || e.code === 'Slash') {
+                this._openConsole();
+                return;
+            }
             // Toggle lo-fi radio with R
             if (e.code === 'KeyR') {
                 if (!this._radio) {
@@ -276,7 +281,7 @@ class App {
         this._lastTime = performance.now();
         this._gameLoop();
 
-        console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | E=调色板 | R=电台 | L=实时风格化 | ESC=返回菜单');
+        console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | E=调色板 | R=电台 | L=实时风格化 | /=设置 | ESC=返回菜单');
     }
 
     _gameLoop() {
@@ -437,6 +442,49 @@ class App {
 
         // Radio volume (applied when radio starts)
         this._radioVolume = s.radioVolume;
+    }
+
+    _openConsole() {
+        // Pause game loop
+        this.running = false;
+        if (this._animFrameId) {
+            cancelAnimationFrame(this._animFrameId);
+            this._animFrameId = null;
+        }
+
+        // Unbind simulation keys
+        if (this._captureKeyHandler) {
+            window.removeEventListener('keydown', this._captureKeyHandler);
+        }
+
+        // Show terminal as overlay (canvas stays visible behind)
+        this.terminalEl.classList.add('overlay-mode');
+        this.terminalEl.style.display = 'flex';
+
+        // Enter settings mode with overlay flag
+        this.terminal.enterSettingsMode(this.settings, {
+            overlay: true,
+            onClose: () => this._closeConsole(),
+        });
+    }
+
+    _closeConsole() {
+        // Hide terminal overlay
+        this.terminalEl.style.display = 'none';
+        this.terminalEl.classList.remove('overlay-mode');
+
+        // Re-apply settings to scene/vehicle
+        this._applySettings();
+
+        // Rebind simulation keys
+        if (this._captureKeyHandler) {
+            window.addEventListener('keydown', this._captureKeyHandler);
+        }
+
+        // Resume game loop
+        this.running = true;
+        this._lastTime = performance.now();
+        this._gameLoop();
     }
 }
 

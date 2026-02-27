@@ -61,6 +61,10 @@ export class Terminal {
         this._commandHistory = [];
         this._historyIdx = -1;
 
+        // Overlay mode (opened with / during simulation)
+        this._overlayMode = false;
+        this._onClose = null;
+
         this._keyHandler = null;
     }
 
@@ -90,11 +94,13 @@ export class Terminal {
 
     /* ── Settings mode entry ── */
 
-    enterSettingsMode(settings) {
+    enterSettingsMode(settings, opts = {}) {
         this._settings = settings;
         this.inputMode = true;
         this.inputBuffer = '';
         this._historyIdx = -1;
+        this._overlayMode = !!opts.overlay;
+        this._onClose = opts.onClose || null;
 
         // Clear container and show settings panel
         this.container.innerHTML = '';
@@ -166,7 +172,8 @@ export class Terminal {
         this._addLine('');
 
         this._addLine('──────────────────────────────────────────', 'dim');
-        this._addLine('  输入 /help 查看命令  |  ESC 返回菜单', 'dim');
+        const escHint = this._overlayMode ? 'ESC 返回模拟' : 'ESC 返回菜单';
+        this._addLine(`  输入 /help 查看命令  |  ${escHint}`, 'dim');
         this._addLine('──────────────────────────────────────────', 'dim');
         this._addLine('');
     }
@@ -538,9 +545,12 @@ export class Terminal {
                 break;
 
             case 'start':
+            case 'resume': {
+                const wasOverlay = this._overlayMode;
                 this._exitSettingsMode();
-                if (this.onAction) this.onAction('start');
+                if (!wasOverlay && this.onAction) this.onAction('start');
                 return;
+            }
 
             case 'export':
                 this._addLine('  ' + this._settings.exportJSON(), 'dim');
@@ -572,19 +582,34 @@ export class Terminal {
         this._addLine('  /volume <0-1>          电台音量', 'dim');
         this._addLine('  /reset                 恢复默认值', 'dim');
         this._addLine('  /clear                 清屏', 'dim');
-        this._addLine('  /start                 启动模拟', 'dim');
+        if (this._overlayMode) {
+            this._addLine('  /resume                返回模拟 (应用更改)', 'dim');
+        } else {
+            this._addLine('  /start                 启动模拟', 'dim');
+        }
         this._addLine('  /export                导出设置 JSON', 'dim');
         this._addLine('');
-        this._addLine('  ESC                    返回主菜单', 'dim');
+        this._addLine(this._overlayMode ? '  ESC                    返回模拟' : '  ESC                    返回主菜单', 'dim');
         this._addLine('');
     }
 
     _exitSettingsMode() {
+        const wasOverlay = this._overlayMode;
+        const onClose = this._onClose;
+
         this.inputMode = false;
         this._settings = null;
         this.inputBuffer = '';
+        this._overlayMode = false;
+        this._onClose = null;
         if (this._inputEl) { this._inputEl.remove(); this._inputEl = null; }
         this._unbindKeys();
+
+        if (wasOverlay && onClose) {
+            // Overlay mode — hand control back to simulation
+            onClose();
+            return;
+        }
 
         // Re-render main menu (no boot replay)
         this.container.innerHTML = '';
