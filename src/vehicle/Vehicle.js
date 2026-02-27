@@ -29,6 +29,11 @@ export class Vehicle {
         this.steerSpeed = 2.5;    // rad/s
         this.steerReturn = 4.0;   // rad/s return to center
 
+        // Collision state
+        this.boundingBox = new THREE.Box3();
+        this._collisionCooldowns = new Map(); // mesh -> cooldown timer
+        this._collisionCooldownTime = 0.3;    // seconds
+
         // Input state
         this.keys = {
             forward: false,
@@ -210,7 +215,8 @@ export class Vehicle {
 
         // Turning (only at speed)
         const turnFactor = Math.min(1, Math.abs(this.velocity) / 5);
-        this.rotation.y += this.steerAngle * turnFactor * dt * 1.5;
+        const turnSign = this.velocity >= 0 ? 1 : -1;
+        this.rotation.y += this.steerAngle * turnSign * turnFactor * dt * 1.5;
 
         // Position update
         const forward = new THREE.Vector3(0, 0, -1);
@@ -231,6 +237,130 @@ export class Vehicle {
         if (this._underglow) {
             this._underglow.material.opacity = 0.2 + 0.15 * Math.sin(Date.now() * 0.003);
         }
+    }
+
+    /* ── Collision ── */
+
+    _updateBoundingBox() {
+        // Car body is 2.0 x 0.6 x 4.5, approximate the rotated footprint as an AABB
+        const halfW = 1.0;
+        const halfH = 0.5;
+        const halfD = 2.25;
+        const cosY = Math.abs(Math.cos(this.rotation.y));
+        const sinY = Math.abs(Math.sin(this.rotation.y));
+
+        // Rotated AABB extents on XZ plane
+        const extX = halfW * cosY + halfD * sinY;
+        const extZ = halfW * sinY + halfD * cosY;
+
+        this.boundingBox.min.set(
+            this.position.x - extX,
+            this.position.y,
+            this.position.z - extZ
+        );
+        this.boundingBox.max.set(
+            this.position.x + extX,
+            this.position.y + halfH * 2,
+            this.position.z + extZ
+        );
+    }
+
+    checkCollisions(collidables, dt) {
+        this._updateBoundingBox();
+
+        // Tick down cooldowns
+        for (const [mesh, t] of this._collisionCooldowns) {
+            const remaining = t - dt;
+            if (remaining <= 0) this._collisionCooldowns.delete(mesh);
+            else this._collisionCooldowns.set(mesh, remaining);
+        }
+
+        const collisions = [];
+        let pushed = false;
+        const PUSH_MARGIN = 0.05; // small extra push to prevent floating-point re-entry
+
+        for (const col of collidables) {
+            // Re-check AABB after prior push-outs this frame
+            if (pushed) this._updateBoundingBox();
+            if (!this.boundingBox.intersectsBox(col.box)) continue;
+
+            // Compute overlap and push-out direction (shortest axis)
+            const overlapX1 = this.boundingBox.max.x - col.box.min.x;
+            const overlapX2 = col.box.max.x - this.boundingBox.min.x;
+            const overlapZ1 = this.boundingBox.max.z - col.box.min.z;
+            const overlapZ2 = col.box.max.z - this.boundingBox.min.z;
+
+            const minOverlapX = Math.min(overlapX1, overlapX2);
+            const minOverlapZ = Math.min(overlapZ1, overlapZ2);
+
+            let pushX = 0, pushZ = 0;
+            if (minOverlapX < minOverlapZ) {
+                pushX = (overlapX1 < overlapX2 ? -1 : 1) * (minOverlapX + PUSH_MARGIN);
+            } else {
+                pushZ = (overlapZ1 < overlapZ2 ? -1 : 1) * (minOverlapZ + PUSH_MARGIN);
+            }
+
+            const isNewCollision = !this._collisionCooldowns.has(col.mesh);
+
+            switch (col.type) {
+                case 'building':
+                case 'barrier':
+                case 'pole':
+                    // ALWAYS push out of hard objects (every frame, not cooldown-gated)
+                    this.position.x += pushX;
+                    this.position.z += pushZ;
+                    pushed = true;
+
+                    // Wall-slide: cancel velocity component into the wall
+                    // instead of zeroing all velocity (allows sliding along walls)
+                    if (Math.abs(this.velocity) > 0.1) {
+                        const nx = pushX !== 0 ? Math.sign(pushX) : 0;
+                        const nz = pushZ !== 0 ? Math.sign(pushZ) : 0;
+                        const fwd = new THREE.Vector3(0, 0, -1).applyEuler(this.rotation);
+                        const dot = fwd.x * nx + fwd.z * nz;
+                        if (dot < 0) {
+                            // Car is heading into wall — remove that component
+                            this.velocity *= Math.max(0, 1 + dot);
+                        }
+                    }
+                    break;
+
+                case 'traffic':
+                    // Always push apart
+                    this.position.x += pushX * 1.5;
+                    this.position.z += pushZ * 1.5;
+                    pushed = true;
+                    // Only apply crash effect on first contact
+                    if (isNewCollision) {
+                        this.velocity *= 0.2;
+                        col.mesh.position.x -= pushX * 0.5;
+                        col.mesh.position.z -= pushZ * 0.5;
+                    }
+                    break;
+
+                case 'cone':
+                    // Cones: only respond once (knockback), no persistent push-out
+                    if (isNewCollision) {
+                        this.velocity *= 0.9;
+                        col.mesh.position.x += pushX * 3;
+                        col.mesh.position.z += pushZ * 3;
+                        col.mesh.position.y += 0.2;
+                    }
+                    break;
+            }
+
+            if (isNewCollision) {
+                this._collisionCooldowns.set(col.mesh, this._collisionCooldownTime);
+                collisions.push({ type: col.type, pushX, pushZ });
+            }
+        }
+
+        // Sync mesh position after all collision resolution
+        if (pushed) {
+            this.group.position.copy(this.position);
+        }
+
+        return collisions;
     }
 
     /* Getters for data collection */

@@ -39,8 +39,8 @@ const RetroShader = {
       vec3 color = vec3(r, g, b);
       float scanline = sin(vUv.y * 800.0 + time * 2.0) * scanlineIntensity;
       color -= scanline;
-      float vignette = smoothstep(0.8, 0.35, length(vUv - 0.5));
-      color *= vignette * 0.25 + 0.75;
+      float vignette = smoothstep(0.9, 0.4, length(vUv - 0.5));
+      color *= vignette * 0.1 + 0.9;
       gl_FragColor = vec4(color, 1.0);
     }
   `,
@@ -83,7 +83,7 @@ export class CyberpunkScene {
     constructor(canvas) {
         this.canvas = canvas;
         this.clock = new THREE.Clock();
-        this.chunks = new Map();  // key "cx,cz" -> { group, meshes[], signs[] }
+        this.chunks = new Map();  // key "cx,cz" -> { group, meshes[], signs[], collidables[] }
         this.signs = [];
         this.trafficVehicles = [];  // oncoming traffic objects
         this.rainDrops = null;
@@ -108,7 +108,7 @@ export class CyberpunkScene {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = 1.8;
+        this.renderer.toneMappingExposure = 2.8;
         this.renderer.shadowMap.enabled = false;
         window.addEventListener('resize', () => this._onResize());
     }
@@ -121,22 +121,22 @@ export class CyberpunkScene {
     }
 
     _initLights() {
-        this.scene.add(new THREE.AmbientLight(0x334466, 1.4));
+        this.scene.add(new THREE.AmbientLight(0x667799, 3.0));
 
-        const dir = new THREE.DirectionalLight(0x8899bb, 0.9);
+        const dir = new THREE.DirectionalLight(0xaabbdd, 2.0);
         dir.position.set(10, 50, -20);
         this.scene.add(dir);
 
-        this.scene.add(new THREE.HemisphereLight(0x6644aa, 0x223344, 1.0));
+        this.scene.add(new THREE.HemisphereLight(0x8866cc, 0x445566, 2.0));
 
         // Vehicle-following lights
-        this._vehicleLight = new THREE.PointLight(0x00ffff, 3.5, 50, 1.5);
+        this._vehicleLight = new THREE.PointLight(0x00ffff, 6, 80, 1.5);
         this.scene.add(this._vehicleLight);
-        this._fillLight = new THREE.PointLight(0xff6633, 2, 70, 2);
+        this._fillLight = new THREE.PointLight(0xff6633, 4, 100, 2);
         this.scene.add(this._fillLight);
     }
 
-    _initFog() { this.scene.fog = new THREE.FogExp2(0x0a0a1a, 0.005); }
+    _initFog() { this.scene.fog = new THREE.FogExp2(0x1a1a3a, 0.003); }
 
     /* ═══════════════════════════════════════
        CHUNK GENERATION — Grid-based
@@ -170,14 +170,34 @@ export class CyberpunkScene {
         }
     }
 
+    /** Walk outward from 0 with variable strides to decide if coord is a road line */
+    _isRoadLine(coord, seed) {
+        if (coord === 0) return true;
+        let pos = 0;
+        if (coord > 0) {
+            while (pos < coord) {
+                const stride = 2 + (((hashChunk(pos, seed) >>> 0) & 3));  // 2–5
+                pos += stride;
+                if (pos === coord) return true;
+            }
+        } else {
+            while (pos > coord) {
+                const stride = 2 + (((hashChunk(pos, seed) >>> 0) & 3));  // 2–5
+                pos -= stride;
+                if (pos === coord) return true;
+            }
+        }
+        return false;
+    }
+
+    _isNSRoadLine(cx) { return this._isRoadLine(cx, 7777); }
+    _isEWRoadLine(cz) { return this._isRoadLine(cz, 9999); }
+
     _getChunkType(cx, cz) {
         const r = seededRandom(cx, cz, 0);
-        // Every 3rd chunk in both axes is a guaranteed intersection
-        const isGridIntersection = (cx % 3 === 0) && (cz % 3 === 0);
-        if (isGridIntersection) return CHUNK_CROSS;
 
-        const onNSRoad = (cx % 3 === 0);
-        const onEWRoad = (cz % 3 === 0);
+        const onNSRoad = this._isNSRoadLine(cx);
+        const onEWRoad = this._isEWRoadLine(cz);
 
         if (onNSRoad && onEWRoad) return CHUNK_CROSS;
         if (onNSRoad) return CHUNK_STRAIGHT_NS;
@@ -195,37 +215,38 @@ export class CyberpunkScene {
         const group = new THREE.Group();
         const meshes = [];
         const chunkSigns = [];
+        const collidables = [];
         const worldX = cx * CHUNK_SIZE;
         const worldZ = cz * CHUNK_SIZE;
         const type = this._getChunkType(cx, cz);
 
         // Ground plane for every chunk
         const groundGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
-        const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.85 });
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2a44, roughness: 0.85 });
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
         ground.position.set(worldX, -0.01, worldZ);
         group.add(ground);
 
         if (type === CHUNK_STRAIGHT_NS) {
-            this._buildRoadNS(group, worldX, worldZ, cx, cz);
-            this._buildSideBuildings(group, meshes, chunkSigns, worldX, worldZ, 'ns', cx, cz);
-            this._buildObstacles(group, meshes, worldX, worldZ, 'ns', cx, cz);
+            this._buildRoadNS(group, worldX, worldZ, cx, cz, collidables);
+            this._buildSideBuildings(group, meshes, chunkSigns, worldX, worldZ, 'ns', cx, cz, collidables);
+            this._buildObstacles(group, meshes, worldX, worldZ, 'ns', cx, cz, collidables);
         } else if (type === CHUNK_STRAIGHT_EW) {
-            this._buildRoadEW(group, worldX, worldZ, cx, cz);
-            this._buildSideBuildings(group, meshes, chunkSigns, worldX, worldZ, 'ew', cx, cz);
-            this._buildObstacles(group, meshes, worldX, worldZ, 'ew', cx, cz);
+            this._buildRoadEW(group, worldX, worldZ, cx, cz, collidables);
+            this._buildSideBuildings(group, meshes, chunkSigns, worldX, worldZ, 'ew', cx, cz, collidables);
+            this._buildObstacles(group, meshes, worldX, worldZ, 'ew', cx, cz, collidables);
         } else if (type === CHUNK_CROSS) {
             this._buildIntersection(group, worldX, worldZ, cx, cz);
-            this._buildCornerBuildings(group, meshes, chunkSigns, worldX, worldZ, cx, cz);
-            this._buildTrafficLights(group, meshes, worldX, worldZ, cx, cz);
+            this._buildCornerBuildings(group, meshes, chunkSigns, worldX, worldZ, cx, cz, collidables);
+            this._buildTrafficLights(group, meshes, worldX, worldZ, cx, cz, collidables);
         } else {
             // Empty — fill with buildings
-            this._buildBlockBuildings(group, meshes, chunkSigns, worldX, worldZ, cx, cz);
+            this._buildBlockBuildings(group, meshes, chunkSigns, worldX, worldZ, cx, cz, collidables);
         }
 
         this.scene.add(group);
-        this.chunks.set(key, { group, meshes, signs: chunkSigns, type, cx, cz });
+        this.chunks.set(key, { group, meshes, signs: chunkSigns, collidables, type, cx, cz });
     }
 
     _removeChunk(key, chunk) {
@@ -257,7 +278,7 @@ export class CyberpunkScene {
 
     /* ── Road builders ── */
 
-    _buildRoadNS(group, wx, wz, cx, cz) {
+    _buildRoadNS(group, wx, wz, cx, cz, collidables) {
         const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, CHUNK_SIZE);
         const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.15 });
         const road = new THREE.Mesh(roadGeo, roadMat);
@@ -285,10 +306,10 @@ export class CyberpunkScene {
         }
 
         // Street lamps
-        this._addStreetLamps(group, wx, wz, 'ns', cx, cz);
+        this._addStreetLamps(group, wx, wz, 'ns', cx, cz, collidables);
     }
 
-    _buildRoadEW(group, wx, wz, cx, cz) {
+    _buildRoadEW(group, wx, wz, cx, cz, collidables) {
         const roadGeo = new THREE.PlaneGeometry(CHUNK_SIZE, ROAD_WIDTH);
         const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.15 });
         const road = new THREE.Mesh(roadGeo, roadMat);
@@ -314,7 +335,7 @@ export class CyberpunkScene {
             group.add(edge);
         }
 
-        this._addStreetLamps(group, wx, wz, 'ew', cx, cz);
+        this._addStreetLamps(group, wx, wz, 'ew', cx, cz, collidables);
     }
 
     _buildIntersection(group, wx, wz, cx, cz) {
@@ -344,7 +365,7 @@ export class CyberpunkScene {
         }
     }
 
-    _addStreetLamps(group, wx, wz, dir, cx, cz) {
+    _addStreetLamps(group, wx, wz, dir, cx, cz, collidables) {
         const poleMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.7, roughness: 0.3 });
         const positions = dir === 'ns'
             ? [{ x: wx - ROAD_WIDTH / 2 - 1, z: wz - 15 }, { x: wx + ROAD_WIDTH / 2 + 1, z: wz + 15 }]
@@ -355,6 +376,12 @@ export class CyberpunkScene {
             pole.position.set(p.x, 3.5, p.z);
             group.add(pole);
 
+            const poleBox = new THREE.Box3().setFromCenterAndSize(
+                new THREE.Vector3(p.x, 3.5, p.z),
+                new THREE.Vector3(0.5, 7, 0.5)
+            );
+            collidables.push({ box: poleBox, mesh: pole, type: 'pole' });
+
             const color = i === 0 ? 0x00ffff : 0xff0080;
             const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), new THREE.MeshBasicMaterial({ color }));
             lamp.position.set(p.x, 7.1, p.z);
@@ -364,7 +391,7 @@ export class CyberpunkScene {
 
     /* ── Building generators ── */
 
-    _buildSideBuildings(group, meshes, chunkSigns, wx, wz, dir, cx, cz) {
+    _buildSideBuildings(group, meshes, chunkSigns, wx, wz, dir, cx, cz, collidables) {
         const numPerSide = 2 + Math.floor(seededRandom(cx, cz, 10) * 3);
         for (const side of [-1, 1]) {
             for (let i = 0; i < numPerSide; i++) {
@@ -375,7 +402,7 @@ export class CyberpunkScene {
 
                 const bGeo = new THREE.BoxGeometry(w, h, d);
                 const bMat = new THREE.MeshStandardMaterial({
-                    color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 50 + i) * 0.2, 0.3, 0.1 + seededRandom(cx, cz, 60 + i) * 0.08),
+                    color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 50 + i) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 60 + i) * 0.12),
                     roughness: 0.75, metalness: 0.2,
                 });
                 const b = new THREE.Mesh(bGeo, bMat);
@@ -389,13 +416,20 @@ export class CyberpunkScene {
                 this.scene.add(b);
                 meshes.push(b);
 
+                // Track building as collidable
+                const box = new THREE.Box3().setFromCenterAndSize(
+                    b.position,
+                    new THREE.Vector3(w, h, d)
+                );
+                collidables.push({ box, mesh: b, type: 'building' });
+
                 // Neon edges & windows
                 this._buildingDetails(b, w, h, d, meshes, chunkSigns, dir === 'ns' ? side : 0, cx, cz, i);
             }
         }
     }
 
-    _buildCornerBuildings(group, meshes, chunkSigns, wx, wz, cx, cz) {
+    _buildCornerBuildings(group, meshes, chunkSigns, wx, wz, cx, cz, collidables) {
         for (let qi = 0; qi < 4; qi++) {
             const sx = qi < 2 ? -1 : 1;
             const sz = qi % 2 === 0 ? -1 : 1;
@@ -407,7 +441,7 @@ export class CyberpunkScene {
 
                 const bGeo = new THREE.BoxGeometry(w, h, d);
                 const bMat = new THREE.MeshStandardMaterial({
-                    color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 140 + qi) * 0.2, 0.3, 0.1 + seededRandom(cx, cz, 150 + qi) * 0.08),
+                    color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 140 + qi) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 150 + qi) * 0.12),
                     roughness: 0.75, metalness: 0.2,
                 });
                 const b = new THREE.Mesh(bGeo, bMat);
@@ -418,12 +452,19 @@ export class CyberpunkScene {
                 );
                 this.scene.add(b);
                 meshes.push(b);
+
+                const box = new THREE.Box3().setFromCenterAndSize(
+                    b.position,
+                    new THREE.Vector3(w, h, d)
+                );
+                collidables.push({ box, mesh: b, type: 'building' });
+
                 this._buildingDetails(b, w, h, d, meshes, chunkSigns, sx, cx, cz, qi * 3 + i);
             }
         }
     }
 
-    _buildBlockBuildings(group, meshes, chunkSigns, wx, wz, cx, cz) {
+    _buildBlockBuildings(group, meshes, chunkSigns, wx, wz, cx, cz, collidables) {
         const num = 3 + Math.floor(seededRandom(cx, cz, 200) * 4);
         for (let i = 0; i < num; i++) {
             const w = 5 + seededRandom(cx, cz, 210 + i) * 12;
@@ -432,7 +473,7 @@ export class CyberpunkScene {
 
             const bGeo = new THREE.BoxGeometry(w, h, d);
             const bMat = new THREE.MeshStandardMaterial({
-                color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 240 + i) * 0.2, 0.3, 0.1 + seededRandom(cx, cz, 250 + i) * 0.08),
+                color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 240 + i) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 250 + i) * 0.12),
                 roughness: 0.75, metalness: 0.2,
             });
             const b = new THREE.Mesh(bGeo, bMat);
@@ -443,6 +484,13 @@ export class CyberpunkScene {
             );
             this.scene.add(b);
             meshes.push(b);
+
+            const box = new THREE.Box3().setFromCenterAndSize(
+                b.position,
+                new THREE.Vector3(w, h, d)
+            );
+            collidables.push({ box, mesh: b, type: 'building' });
+
             this._buildingDetails(b, w, h, d, meshes, chunkSigns, 1, cx, cz, i);
         }
     }
@@ -503,12 +551,12 @@ export class CyberpunkScene {
 
     /* ── Obstacles ── */
 
-    _buildObstacles(group, meshes, wx, wz, dir, cx, cz) {
+    _buildObstacles(group, meshes, wx, wz, dir, cx, cz, collidables) {
         const r = seededRandom(cx, cz, 800);
 
         // Roadblock barrier (30% chance)
         if (r < 0.3) {
-            this._addRoadblock(group, meshes, wx, wz, dir, cx, cz);
+            this._addRoadblock(group, meshes, wx, wz, dir, cx, cz, collidables);
         }
 
         // Oncoming traffic (40% chance)
@@ -517,14 +565,17 @@ export class CyberpunkScene {
         }
     }
 
-    _addRoadblock(group, meshes, wx, wz, dir, cx, cz) {
+    _addRoadblock(group, meshes, wx, wz, dir, cx, cz, collidables) {
         // Which lane to block
         const lane = seededRandom(cx, cz, 820) < 0.5 ? -1 : 1;
         const laneOffset = lane * 3.5;
         const alongOffset = (seededRandom(cx, cz, 830) - 0.5) * CHUNK_SIZE * 0.5;
 
         // Barrier — striped black/yellow box
-        const barrierGeo = new THREE.BoxGeometry(dir === 'ns' ? 4 : 0.5, 1.2, dir === 'ns' ? 0.5 : 4);
+        const bw = dir === 'ns' ? 4 : 0.5;
+        const bh = 1.2;
+        const bd = dir === 'ns' ? 0.5 : 4;
+        const barrierGeo = new THREE.BoxGeometry(bw, bh, bd);
         const barrierMat = new THREE.MeshStandardMaterial({ color: 0xffaa00, roughness: 0.6 });
         const barrier = new THREE.Mesh(barrierGeo, barrierMat);
         if (dir === 'ns') {
@@ -533,6 +584,12 @@ export class CyberpunkScene {
             barrier.position.set(wx + alongOffset, 0.6, wz + laneOffset);
         }
         group.add(barrier);
+
+        const barrierBox = new THREE.Box3().setFromCenterAndSize(
+            barrier.position,
+            new THREE.Vector3(bw, bh, bd)
+        );
+        collidables.push({ box: barrierBox, mesh: barrier, type: 'barrier' });
 
         // Warning stripes
         const stripeGeo = new THREE.BoxGeometry(dir === 'ns' ? 4.02 : 0.52, 0.3, dir === 'ns' ? 0.52 : 4.02);
@@ -563,6 +620,12 @@ export class CyberpunkScene {
                 cone.position.set(wx + alongOffset, 0.3, wz + laneOffset + cOffset);
             }
             group.add(cone);
+
+            const coneBox = new THREE.Box3().setFromCenterAndSize(
+                cone.position,
+                new THREE.Vector3(0.4, 0.6, 0.4)
+            );
+            collidables.push({ box: coneBox, mesh: cone, type: 'cone' });
         }
     }
 
@@ -632,7 +695,7 @@ export class CyberpunkScene {
         });
     }
 
-    _buildTrafficLights(group, meshes, wx, wz, cx, cz) {
+    _buildTrafficLights(group, meshes, wx, wz, cx, cz, collidables) {
         const positions = [
             { x: wx - ROAD_WIDTH / 2 - 1, z: wz - ROAD_WIDTH / 2 - 1, ry: 0 },
             { x: wx + ROAD_WIDTH / 2 + 1, z: wz + ROAD_WIDTH / 2 + 1, ry: Math.PI },
@@ -646,6 +709,12 @@ export class CyberpunkScene {
             const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 5, 6), poleMat);
             pole.position.set(p.x, 2.5, p.z);
             group.add(pole);
+
+            const poleBox = new THREE.Box3().setFromCenterAndSize(
+                new THREE.Vector3(p.x, 2.5, p.z),
+                new THREE.Vector3(0.5, 5, 0.5)
+            );
+            collidables.push({ box: poleBox, mesh: pole, type: 'pole' });
 
             // Light housing
             const houseGeo = new THREE.BoxGeometry(0.5, 1.5, 0.3);
@@ -701,7 +770,7 @@ export class CyberpunkScene {
             vertexShader: `varying vec3 vWP; void main(){ vWP=(modelMatrix*vec4(position,1.0)).xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
             fragmentShader: `varying vec3 vWP; void main(){
         float h=normalize(vWP).y;
-        vec3 lo=vec3(0.03,0.01,0.08); vec3 hi=vec3(0.0,0.0,0.03);
+        vec3 lo=vec3(0.08,0.03,0.14); vec3 hi=vec3(0.02,0.02,0.08);
         vec3 c=mix(lo,hi,smoothstep(-0.1,0.5,h));
         float g=exp(-abs(h)*8.0)*0.35; c+=vec3(0.6,0.1,0.35)*g;
         gl_FragColor=vec4(c,1.0);
@@ -725,6 +794,42 @@ export class CyberpunkScene {
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(w, h);
         this.composer.setSize(w, h);
+    }
+
+    /* ── Collision helpers ── */
+
+    getCollidables(vehiclePos, radius) {
+        const result = [];
+        const rSq = radius * radius;
+
+        // Static collidables from nearby chunks
+        for (const [, chunk] of this.chunks) {
+            const cx = chunk.cx * CHUNK_SIZE;
+            const cz = chunk.cz * CHUNK_SIZE;
+            const dx = vehiclePos.x - cx;
+            const dz = vehiclePos.z - cz;
+            if (dx * dx + dz * dz > (radius + CHUNK_SIZE) * (radius + CHUNK_SIZE)) continue;
+
+            for (const c of chunk.collidables) {
+                result.push(c);
+            }
+        }
+
+        // Traffic vehicles (dynamic — recompute boxes from current position)
+        for (const tv of this.trafficVehicles) {
+            const pos = tv.mesh.position;
+            const dx = vehiclePos.x - pos.x;
+            const dz = vehiclePos.z - pos.z;
+            if (dx * dx + dz * dz > rSq) continue;
+
+            const box = new THREE.Box3().setFromCenterAndSize(
+                pos,
+                new THREE.Vector3(1.8, 0.7, 3.5)
+            );
+            result.push({ box, mesh: tv.mesh, type: 'traffic' });
+        }
+
+        return result;
     }
 
     /* ═══════════════════════════════════════
@@ -776,17 +881,28 @@ export class CyberpunkScene {
         }
 
         // Camera — chase behind vehicle based on its rotation
-        const camDist = 14;
-        const camHeight = 6;
+        const camDist = 10;
+        const camHeight = 5;
+        const maxCamLag = 3; // max distance camera can fall behind target
         const behindX = vehiclePos.x + Math.sin(vehicleRot.y) * camDist;
         const behindZ = vehiclePos.z + Math.cos(vehicleRot.y) * camDist;
         const camTarget = new THREE.Vector3(behindX, camHeight, behindZ);
-        this.camera.position.lerp(camTarget, 4 * dt);
+
+        // Smooth exponential follow (frame-rate independent)
+        const smoothing = 1 - Math.exp(-8 * dt);
+        this.camera.position.lerp(camTarget, smoothing);
+
+        // Clamp camera distance so it never drifts too far from target
+        const camOffset = this.camera.position.clone().sub(camTarget);
+        if (camOffset.length() > maxCamLag) {
+            camOffset.setLength(maxCamLag);
+            this.camera.position.copy(camTarget).add(camOffset);
+        }
 
         const lookTarget = new THREE.Vector3(
-            vehiclePos.x - Math.sin(vehicleRot.y) * 15,
+            vehiclePos.x - Math.sin(vehicleRot.y) * 12,
             1.0,
-            vehiclePos.z - Math.cos(vehicleRot.y) * 15
+            vehiclePos.z - Math.cos(vehicleRot.y) * 12
         );
         this.camera.lookAt(lookTarget);
 
