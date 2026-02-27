@@ -1409,6 +1409,22 @@ export class CyberpunkScene {
             bb.rotation.y = faceSide < 0 ? Math.PI / 2 : -Math.PI / 2;
             this.scene.add(bb);
             meshes.push(bb);
+
+            // Neon border frame (always glowing)
+            const borderMat = new THREE.MeshBasicMaterial({ color: randomNeon() });
+            const hBar = new THREE.BoxGeometry(bbW + 0.12, 0.08, 0.06);
+            const vBar = new THREE.BoxGeometry(0.08, bbH + 0.12, 0.06);
+            for (const dy of [-bbH / 2, bbH / 2]) {
+                const bar = new THREE.Mesh(hBar, borderMat);
+                bar.position.set(0, dy, 0.02);
+                bb.add(bar);
+            }
+            for (const dx of [-bbW / 2, bbW / 2]) {
+                const bar = new THREE.Mesh(vBar, borderMat);
+                bar.position.set(dx, 0, 0.02);
+                bb.add(bar);
+            }
+
             const signObj = { mesh: bb, baseOpacity: bbMat.opacity, phase: seededRandom(cx, cz, 740 + idx) * Math.PI * 2 };
             this.signs.push(signObj);
             chunkSigns.push(signObj);
@@ -1428,14 +1444,14 @@ export class CyberpunkScene {
         const roofY = building.position.y + h / 2;
 
         // Support pole
-        const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.6, roughness: 0.4 });
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.6, roughness: 0.4, emissive: 0x222222, emissiveIntensity: 0.5 });
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3, 6), poleMat);
         pole.position.set(building.position.x, roofY + 1.5, building.position.z);
         this.scene.add(pole);
         meshes.push(pole);
 
-        // Frame
-        const frameMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.5, roughness: 0.5 });
+        // Frame — neon glowing border
+        const frameMat = new THREE.MeshBasicMaterial({ color: randomNeon() });
         const frame = new THREE.Mesh(new THREE.BoxGeometry(bbW + 0.4, bbH + 0.4, 0.15), frameMat);
         frame.position.set(building.position.x, roofY + 3 + bbH / 2, building.position.z);
         this.scene.add(frame);
