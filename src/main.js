@@ -241,7 +241,7 @@ class App {
                 this._openConsole();
                 return;
             }
-            // Toggle lo-fi radio with R
+            // Cycle radio with R: OFF → lo-fi → jazz → OFF
             if (e.code === 'KeyR') {
                 if (!this._radio) {
                     this._radio = new LofiRadio();
@@ -249,9 +249,8 @@ class App {
                         this._radio._masterGain.gain.value = this._radioVolume;
                     }
                 }
-                const active = this._radio.toggle();
-                console.log(`[Radio] ${active ? '♪ ON' : 'OFF'}`);
-                this._updateRadioHud(active);
+                const mode = this._radio.toggle();
+                this._updateRadioHud(mode);
             }
         };
         window.addEventListener('keydown', this._captureKeyHandler);
@@ -276,10 +275,20 @@ class App {
         if (!this._engine) this._engine = new EngineSound();
         this._engine.start();
 
+        // Hex HUD
+        if (!this._hexHud) {
+            const { HexHud } = await import('./ui/HexHud.js');
+            this._hexHud = new HexHud();
+        }
+        this._hexHud.show();
+
         // Start game loop
         this.running = true;
         this._lastTime = performance.now();
         this._gameLoop();
+
+        // Seatbelt chime
+        this._playSeatbeltChime();
 
         console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | E=调色板 | R=电台 | L=实时风格化 | /=设置 | ESC=返回菜单');
     }
@@ -334,6 +343,18 @@ class App {
         // Engine sound
         if (this._engine) this._engine.update(dt, this.vehicle);
 
+        // Hex HUD — collision proximity
+        if (this._hexHud) {
+            let minDist = Infinity;
+            for (const col of collidables) {
+                const dx = (col.box.min.x + col.box.max.x) * 0.5 - this.vehicle.position.x;
+                const dz = (col.box.min.z + col.box.max.z) * 0.5 - this.vehicle.position.z;
+                const dist = Math.sqrt(dx * dx + dz * dz);
+                if (dist < minDist) minDist = dist;
+            }
+            this._hexHud.update(dt, Math.max(0, 1 - minDist / 15));
+        }
+
         // FPS counter
         this._fpsFrames++;
         this._fpsTime += dt;
@@ -373,6 +394,7 @@ class App {
         if (this._radio) { this._radio.dispose(); this._radio = null; }
         if (this._engine) { this._engine.dispose(); this._engine = null; }
         this._updateRadioHud(false);
+        if (this._hexHud) this._hexHud.hide();
 
         // Hide canvas, VHS overlay, and FPS counter, show terminal
         this.canvasEl.style.display = 'none';
@@ -386,14 +408,17 @@ class App {
         await Exporter.exportZip(data);
     }
 
-    _updateRadioHud(active) {
+    _updateRadioHud(mode) {
         if (!this._radioHud) {
             this._radioHud = document.createElement('div');
             this._radioHud.style.cssText = 'position:fixed;top:8px;right:12px;font-family:"VT323",monospace;font-size:16px;color:#0ff;letter-spacing:2px;z-index:200;pointer-events:none;text-shadow:0 0 6px rgba(0,255,255,0.4),1px 0 0 rgba(255,40,40,0.3),-1px 0 0 rgba(40,40,255,0.2);opacity:0.85;white-space:pre;';
             document.body.appendChild(this._radioHud);
         }
-        if (active) {
-            this._radioHud.textContent = '📻 NEURODRIVE FM — ♪ lo-fi beats';
+        if (mode === 'lofi') {
+            this._radioHud.textContent = '\uD83D\uDCFB NEURODRIVE FM \u2014 \u266A lo-fi beats';
+            this._radioHud.style.display = 'block';
+        } else if (mode === 'jazz') {
+            this._radioHud.textContent = '\uD83D\uDCFB NEURODRIVE FM \u2014 \uD83C\uDFB7 jazz session';
             this._radioHud.style.display = 'block';
         } else {
             this._radioHud.style.display = 'none';
@@ -412,6 +437,7 @@ class App {
         // Palette
         this.scene.setPalettePool(s.paletteMode);
         this.scene.setPalette(s.palette);
+        this.scene.setPaletteLock(s.paletteLock);
 
         // Bloom — passes[1] is UnrealBloomPass
         const bloomPass = this.scene.composer.passes[1];
@@ -445,6 +471,28 @@ class App {
 
         // Radio volume (applied when radio starts)
         this._radioVolume = s.radioVolume;
+    }
+
+    _playSeatbeltChime() {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const now = ctx.currentTime;
+        const playTone = (freq, t) => {
+            const osc = ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            const env = ctx.createGain();
+            env.gain.setValueAtTime(0, t);
+            env.gain.linearRampToValueAtTime(0.06, t + 0.02);
+            env.gain.setValueAtTime(0.06, t + 0.15);
+            env.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+            osc.connect(env);
+            env.connect(ctx.destination);
+            osc.start(t);
+            osc.stop(t + 0.45);
+        };
+        playTone(523.25, now + 0.1); // C5
+        playTone(659.25, now + 0.35); // E5
+        setTimeout(() => ctx.close().catch(() => {}), 1500);
     }
 
     _openConsole() {

@@ -156,10 +156,16 @@ const PALETTES = [
         vehicleLight: 0x66ddff, fillLight: 0xff66aa,
         skyLo: [0.65, 0.58, 0.72], skyHi: [0.50, 0.55, 0.70], skyGlow: [0.75, 0.45, 0.60],
     },
+    {   // Bebop — dusty orange/amber/teal (Cowboy Bebop inspired)
+        neons: [0xff8844, 0xcc6633, 0xffcc44, 0x448888, 0xff6622, 0xddaa33, 0x55aaaa],
+        fog: 0x2a1800, rain: 0xcc9966,
+        vehicleLight: 0xffcc44, fillLight: 0xff8844,
+        skyLo: [0.16, 0.08, 0.03], skyHi: [0.08, 0.04, 0.02], skyGlow: [0.7, 0.35, 0.08],
+    },
 ];
 
 // Palette tone classification: dark vs light
-const PALETTE_TONE = ['dark', 'dark', 'dark', 'light', 'dark', 'light', 'light'];
+const PALETTE_TONE = ['dark', 'dark', 'dark', 'light', 'dark', 'light', 'light', 'dark'];
 const DARK_PALETTES  = PALETTE_TONE.map((t, i) => t === 'dark'  ? i : -1).filter(i => i >= 0);
 const LIGHT_PALETTES = PALETTE_TONE.map((t, i) => t === 'light' ? i : -1).filter(i => i >= 0);
 const ALL_PALETTES   = PALETTES.map((_, i) => i);
@@ -215,6 +221,7 @@ export class CyberpunkScene {
         this._paletteIndex = 0;
         this._paletteTimer = 0;
         this._palettePool = ALL_PALETTES; // indices to cycle through
+        this._paletteLocked = false;
         this.camDist = 10;
         this.camHeight = 5;
 
@@ -2141,6 +2148,10 @@ export class CyberpunkScene {
         }
     }
 
+    setPaletteLock(locked) {
+        this._paletteLocked = !!locked;
+    }
+
     setEdgesVisible(enabled) {
         this._buildingEdgesEnabled = enabled;
         for (const m of this._allEdgeMeshes) m.visible = enabled;
@@ -2153,15 +2164,17 @@ export class CyberpunkScene {
     update(vehiclePos, vehicleRot, dt) {
         const elapsed = this.clock.getElapsedTime();
 
-        // Palette cycling — swap every 10 seconds (respects palette pool)
-        this._paletteTimer += dt;
-        if (this._paletteTimer >= 10) {
-            this._paletteTimer = 0;
-            const pool = this._palettePool;
-            const curPos = pool.indexOf(this._paletteIndex);
-            const nextPos = (curPos + 1) % pool.length;
-            this._paletteIndex = pool[nextPos];
-            this._applyPalette(PALETTES[this._paletteIndex]);
+        // Palette cycling — swap every 10 seconds (skip if locked)
+        if (!this._paletteLocked) {
+            this._paletteTimer += dt;
+            if (this._paletteTimer >= 10) {
+                this._paletteTimer = 0;
+                const pool = this._palettePool;
+                const curPos = pool.indexOf(this._paletteIndex);
+                const nextPos = (curPos + 1) % pool.length;
+                this._paletteIndex = pool[nextPos];
+                this._applyPalette(PALETTES[this._paletteIndex]);
+            }
         }
 
         // Chunk management

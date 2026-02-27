@@ -42,7 +42,7 @@ const MENU_ITEMS = [
 
 const PALETTE_NAMES = [
     'Classic Cyber', 'Toxic Neon', 'Bloodline', 'Ice',
-    'Synthwave', 'Gold Rush', 'Light Cyber',
+    'Synthwave', 'Gold Rush', 'Light Cyber', 'Bebop',
 ];
 
 export class Terminal {
@@ -138,6 +138,7 @@ export class Terminal {
         this._addLine('  ▸ 视觉 / Visual', 'cyan');
         this._addLine(`    palette ............ ${PALETTE_NAMES[s.palette]} (${s.palette})`, 'yellow');
         this._addLine(`    paletteMode ........ ${s.paletteMode}`, 'yellow');
+        this._addLine(`    paletteLock ........ ${s.paletteLock ? 'ON' : 'OFF'}`, 'yellow');
         this._addLine(`    bloomStrength ...... ${s.bloomStrength}`, 'yellow');
         this._addLine(`    bloomThreshold ..... ${s.bloomThreshold}`, 'yellow');
         this._addLine(`    scanlines .......... ${s.scanlines ? 'ON' : 'OFF'}`, 'yellow');
@@ -394,7 +395,20 @@ export class Terminal {
             case 'palette': {
                 if (arg === undefined) { this._addLine(`  当前: palette = ${this._settings.get('palette')} (${PALETTE_NAMES[this._settings.get('palette')]})`, 'cyan'); break; }
                 const r = this._settings.set('palette', arg);
-                if (r.ok) this._addLine(`  ✓ palette → ${PALETTE_NAMES[r.value]} (${r.value})`, 'cyan');
+                if (r.ok) {
+                    this._addLine(`  ✓ palette → ${PALETTE_NAMES[r.value]} (${r.value})`, 'cyan');
+                    this._settings.set('paletteLock', true);
+                    this._addLine('  ✓ 调色板已锁定 (输入 /palettelock off 解锁)', 'dim');
+                } else {
+                    this._addLine(`  ✗ ${r.error}`, 'red');
+                }
+                break;
+            }
+
+            case 'palettelock': {
+                if (arg === undefined) { this._addLine(`  当前: paletteLock = ${this._settings.get('paletteLock') ? 'ON' : 'OFF'}`, 'cyan'); break; }
+                const r = this._settings.set('paletteLock', arg);
+                if (r.ok) this._addLine(`  ✓ paletteLock → ${r.value ? 'ON (锁定)' : 'OFF (自动循环)'}`, 'cyan');
                 else this._addLine(`  ✗ ${r.error}`, 'red');
                 break;
             }
@@ -576,8 +590,9 @@ export class Terminal {
         this._addLine('');
         this._addLine('  ╔═══ 命令列表 / COMMANDS ═══╗', 'cyan');
         this._addLine('');
-        this._addLine('  /palette <0-6>         调色板 (Classic Cyber → Light Cyber)', 'dim');
+        this._addLine('  /palette <0-7>         调色板 (Classic Cyber → Bebop)', 'dim');
         this._addLine('  /mode <all|dark|light>  调色板模式 (循环范围)', 'dim');
+        this._addLine('  /palettelock <on|off>  锁定调色板 (停止自动循环)', 'dim');
         this._addLine('  /fov <50-110>          视场角', 'dim');
         this._addLine('  /cam <dist> [height]   相机距离/高度', 'dim');
         this._addLine('  /bloom <str> [thresh]  泛光强度/阈值', 'dim');

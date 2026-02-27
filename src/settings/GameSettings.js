@@ -23,11 +23,12 @@ const DEFAULTS = {
     dataCaptureInterval: 5,
     radioVolume: 0.15,
     paletteMode: 'all',
+    paletteLock: false,
     buildingEdges: false,
 };
 
 const RANGES = {
-    palette:              { min: 0,    max: 6,    type: 'int' },
+    palette:              { min: 0,    max: 7,    type: 'int' },
     rainIntensity:        { min: 0,    max: 2,    type: 'float' },
     fov:                  { min: 50,   max: 110,  type: 'int' },
     cameraDistance:        { min: 5,    max: 20,   type: 'float' },
@@ -44,6 +45,7 @@ const RANGES = {
     dataCaptureInterval:  { min: 1,    max: 60,   type: 'int' },
     radioVolume:          { min: 0,    max: 1,    type: 'float' },
     paletteMode:          { type: 'enum', values: ['all', 'dark', 'light'] },
+    paletteLock:          { type: 'bool' },
     buildingEdges:        { type: 'bool' },
 };
 
