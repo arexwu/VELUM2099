@@ -271,6 +271,51 @@ export class Vehicle {
 
         this.group.position.copy(this.position);
         this.scene.add(this.group);
+
+        // ── Tail light trails ──
+        this._trailSegments = 12;
+        this._trails = [];
+        for (const side of [-0.6, 0.6]) {
+            const geo = new THREE.BufferGeometry();
+            const positions = new Float32Array(this._trailSegments * 3);
+            const alphas = new Float32Array(this._trailSegments);
+            // Initialize all trail points at the taillight position
+            for (let i = 0; i < this._trailSegments; i++) {
+                positions[i * 3] = 0;
+                positions[i * 3 + 1] = 0;
+                positions[i * 3 + 2] = 0;
+                alphas[i] = 1.0 - i / this._trailSegments;
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geo.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
+
+            const mat = new THREE.ShaderMaterial({
+                uniforms: { color: { value: new THREE.Color(0xff1122) } },
+                vertexShader: `
+                    attribute float alpha;
+                    varying float vAlpha;
+                    void main() {
+                        vAlpha = alpha;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 color;
+                    varying float vAlpha;
+                    void main() {
+                        gl_FragColor = vec4(color, vAlpha * 0.4);
+                    }
+                `,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+            });
+
+            const line = new THREE.Line(geo, mat);
+            line.frustumCulled = false;
+            this.scene.add(line);
+            this._trails.push({ line, side, localY: 0.6, localZ: 2.13 });
+        }
     }
 
     _bindInput() {
@@ -424,6 +469,25 @@ export class Vehicle {
         if (this._underglow) {
             const baseOpacity = this.drifting ? 0.6 : 0.35;
             this._underglow.material.opacity = baseOpacity + 0.15 * Math.sin(Date.now() * 0.003);
+        }
+
+        // Tail light trails — shift positions backward, insert new head
+        for (const trail of this._trails) {
+            const pos = trail.line.geometry.attributes.position;
+            const arr = pos.array;
+            // Shift all points back by one slot
+            for (let i = this._trailSegments - 1; i > 0; i--) {
+                arr[i * 3] = arr[(i - 1) * 3];
+                arr[i * 3 + 1] = arr[(i - 1) * 3 + 1];
+                arr[i * 3 + 2] = arr[(i - 1) * 3 + 2];
+            }
+            // Compute world position of this taillight
+            this._fwd.set(trail.side, trail.localY, trail.localZ);
+            this.group.localToWorld(this._fwd);
+            arr[0] = this._fwd.x;
+            arr[1] = this._fwd.y;
+            arr[2] = this._fwd.z;
+            pos.needsUpdate = true;
         }
     }
 
