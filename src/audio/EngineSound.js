@@ -1,8 +1,16 @@
 /* ═══════════════════════════════════════════
    NEURODRIVE — Engine Sound Synthesizer
    4-cylinder engine idle/rev + turbo spool + BOV
+   + 6-speed automatic gearbox with shift sounds
    All Web Audio API — no external files
    ═══════════════════════════════════════════ */
+
+// Speed ceiling for each gear (m/s) — gear 1 through 6
+const GEAR_TOPS = [10, 20, 32, 42, 52, 65];
+const NUM_GEARS = GEAR_TOPS.length;
+const UPSHIFT_POINT = 0.88;   // shift up at 88% of gear range
+const DOWNSHIFT_POINT = 0.18; // shift down at 18% of gear range
+const SHIFT_COOLDOWN = 0.35;  // seconds between shifts
 
 export class EngineSound {
     constructor() {
@@ -11,15 +19,20 @@ export class EngineSound {
         this._running = false;
 
         // Engine state
-        this._rpm = 0;            // 0-1 normalized
+        this._rpm = 0;            // 0-1 normalized within current gear
         this._turboSpool = 0;     // 0-1 pressure buildup
         this._wasThrustOn = false;
+
+        // Gear state
+        this.gear = 1;            // current gear (1-6)
+        this._shiftTimer = 0;     // cooldown after shift
 
         // Nodes
         this._engineOsc1 = null;
         this._engineOsc2 = null;
         this._harmonicOsc = null;
         this._engineGain = null;
+        this._engineFilter = null;
         this._turboOsc = null;
         this._turboGain = null;
         this._compressor = null;
@@ -52,39 +65,39 @@ export class EngineSound {
         this._masterGain.connect(ctx.destination);
 
         // ── A) Engine core — 2 detuned sawtooth oscillators ──
-        const engineFilter = ctx.createBiquadFilter();
-        engineFilter.type = 'bandpass';
-        engineFilter.frequency.value = 200;
-        engineFilter.Q.value = 1.5;
+        this._engineFilter = ctx.createBiquadFilter();
+        this._engineFilter.type = 'bandpass';
+        this._engineFilter.frequency.value = 200;
+        this._engineFilter.Q.value = 1.5;
 
         this._engineGain = ctx.createGain();
         this._engineGain.gain.value = 0.3;
 
-        engineFilter.connect(this._engineGain);
+        this._engineFilter.connect(this._engineGain);
         this._engineGain.connect(this._compressor);
 
         this._engineOsc1 = ctx.createOscillator();
         this._engineOsc1.type = 'sawtooth';
-        this._engineOsc1.frequency.value = 45;
-        this._engineOsc1.connect(engineFilter);
+        this._engineOsc1.frequency.value = 35;
+        this._engineOsc1.connect(this._engineFilter);
         this._engineOsc1.start();
 
         this._engineOsc2 = ctx.createOscillator();
         this._engineOsc2.type = 'sawtooth';
-        this._engineOsc2.frequency.value = 45;
+        this._engineOsc2.frequency.value = 35;
         this._engineOsc2.detune.value = 5;
-        this._engineOsc2.connect(engineFilter);
+        this._engineOsc2.connect(this._engineFilter);
         this._engineOsc2.start();
 
         // ── B) Second harmonic — square wave at 2× for 4-cyl buzz ──
         this._harmonicOsc = ctx.createOscillator();
         this._harmonicOsc.type = 'square';
-        this._harmonicOsc.frequency.value = 90;
+        this._harmonicOsc.frequency.value = 70;
 
         const harmonicGain = ctx.createGain();
         harmonicGain.gain.value = 0.15;
         this._harmonicOsc.connect(harmonicGain);
-        harmonicGain.connect(engineFilter);
+        harmonicGain.connect(this._engineFilter);
         this._harmonicOsc.start();
 
         // ── C) Turbo spool whistle — sine through narrow bandpass ──
@@ -118,23 +131,55 @@ export class EngineSound {
         if (!this._running || !this.ctx) return;
 
         const now = this.ctx.currentTime;
+        const speed = Math.abs(vehicle.velocity);
 
-        // 1. Compute target RPM from speed
-        const targetRPM = Math.abs(vehicle.velocity) / vehicle.maxSpeed;
-        this._rpm += (targetRPM - this._rpm) * (1 - Math.exp(-6 * dt));
+        // ── 1. Gear shifting ──
+        this._shiftTimer = Math.max(0, this._shiftTimer - dt);
 
-        // 2. Update engine oscillator frequencies
-        const baseFreq = 45 + this._rpm * 120;
-        this._engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.05);
-        this._engineOsc2.frequency.setTargetAtTime(baseFreq, now, 0.05);
-        this._harmonicOsc.frequency.setTargetAtTime(baseFreq * 2, now, 0.05);
+        const gi = this.gear - 1;
+        const gearBottom = gi === 0 ? 0 : GEAR_TOPS[gi - 1];
+        const gearTop = GEAR_TOPS[gi];
+        const gearRPM = Math.min(1, Math.max(0, (speed - gearBottom) / (gearTop - gearBottom)));
 
-        // 3. Engine volume — louder at higher RPM
+        if (this._shiftTimer <= 0) {
+            if (gearRPM > UPSHIFT_POINT && this.gear < NUM_GEARS) {
+                this.gear++;
+                this._shiftTimer = SHIFT_COOLDOWN;
+                this._triggerShiftThunk();
+            } else if (gearRPM < DOWNSHIFT_POINT && this.gear > 1) {
+                this.gear--;
+                this._shiftTimer = SHIFT_COOLDOWN;
+                this._triggerShiftThunk();
+            }
+        }
+
+        // ── 2. Compute RPM within (possibly new) gear ──
+        const gi2 = this.gear - 1;
+        const bot = gi2 === 0 ? 0 : GEAR_TOPS[gi2 - 1];
+        const top = GEAR_TOPS[gi2];
+        const targetRPM = Math.min(1, Math.max(0, (speed - bot) / (top - bot)));
+
+        // Smooth RPM — faster rise for rev, slower drop for shift
+        const rpmRate = targetRPM > this._rpm ? 8 : 5;
+        this._rpm += (targetRPM - this._rpm) * (1 - Math.exp(-rpmRate * dt));
+
+        // ── 3. Engine frequency — wider sweep per gear ──
+        // Idle ~35Hz, redline ~175Hz. Higher gears have slightly higher base.
+        const gearOffset = gi2 * 4; // subtle pitch rise per gear
+        const baseFreq = 35 + gearOffset + this._rpm * 140;
+        this._engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.04);
+        this._engineOsc2.frequency.setTargetAtTime(baseFreq, now, 0.04);
+        this._harmonicOsc.frequency.setTargetAtTime(baseFreq * 2, now, 0.04);
+
+        // Bandpass filter tracks engine fundamental
+        this._engineFilter.frequency.setTargetAtTime(baseFreq * 1.5, now, 0.04);
+
+        // ── 4. Engine volume — louder at higher RPM ──
         const engVol = 0.3 + this._rpm * 0.7;
         this._engineGain.gain.setTargetAtTime(engVol, now, 0.05);
 
-        // 4. Turbo spool
-        const thrusting = vehicle.throttle > 0 && Math.abs(vehicle.velocity) > 8;
+        // ── 5. Turbo spool ──
+        const thrusting = vehicle.throttle > 0 && speed > 8;
         if (thrusting) {
             this._turboSpool = Math.min(1, this._turboSpool + dt * 0.5);
         } else {
@@ -147,11 +192,36 @@ export class EngineSound {
             this._turboSpool * 0.08, now, 0.05
         );
 
-        // 5. BOV trigger — throttle released after sustained spool
+        // ── 6. BOV trigger — throttle released after sustained spool ──
         if (this._wasThrustOn && vehicle.throttle === 0 && this._turboSpool > 0.3) {
             this._triggerBOV();
         }
         this._wasThrustOn = thrusting;
+    }
+
+    _triggerShiftThunk() {
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+
+        // Short filtered noise burst — mechanical clunk
+        const source = ctx.createBufferSource();
+        source.buffer = this._noiseBuffer;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 800;
+        filter.Q.value = 1;
+
+        const env = ctx.createGain();
+        env.gain.setValueAtTime(0, now);
+        env.gain.linearRampToValueAtTime(0.04, now + 0.005);
+        env.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+
+        source.connect(filter);
+        filter.connect(env);
+        env.connect(this._masterGain);
+        source.start(now);
+        source.stop(now + 0.08);
     }
 
     _triggerBOV() {
