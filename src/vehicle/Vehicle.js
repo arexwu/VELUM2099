@@ -42,7 +42,7 @@ export class Vehicle {
         this.driftSteerMultiplier = 1.8;
         this.driftMaxSteer = 1.0;
         this.driftLateralFriction = 3.0;
-        this.driftLateralKick = 0.6;
+        this.driftLateralKick = 0.35;
         this.driftGrip = 0.15;
 
         // Collision state
@@ -342,10 +342,10 @@ export class Vehicle {
             this.velocity -= this.brakeForce * this.brake * dt;
         }
 
-        // Drift physics — reduced forward friction, maintain lateral slide
+        // Drift physics — forward drag + lateral slide from steering
         if (this.drifting) {
-            this.velocity *= Math.pow(0.85, dt);
-            this.lateralVelocity += this.steerAngle * Math.abs(this.velocity) * dt * 2.0;
+            this.velocity *= Math.pow(0.55, dt);
+            this.lateralVelocity += this.steerAngle * Math.abs(this.velocity) * dt * 1.2;
         } else {
             // Normal lateral friction
             if (Math.abs(this.lateralVelocity) > 0.01) {
@@ -366,7 +366,7 @@ export class Vehicle {
         }
 
         // Clamp lateral velocity
-        const maxLateral = Math.abs(this.velocity) * 0.8;
+        const maxLateral = Math.abs(this.velocity) * 0.5;
         this.lateralVelocity = Math.max(-maxLateral, Math.min(this.lateralVelocity, maxLateral));
 
         // Normal friction
