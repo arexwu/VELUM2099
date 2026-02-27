@@ -431,6 +431,7 @@ export class CyberpunkScene {
         const meshes = [];
         const chunkSigns = [];
         const collidables = [];
+        this._chunkRBs = [];
         const worldX = cx * CHUNK_SIZE;
         const worldZ = cz * CHUNK_SIZE;
         const type = this._getChunkType(cx, cz);
@@ -444,11 +445,11 @@ export class CyberpunkScene {
         group.add(ground);
 
         if (type === CHUNK_STRAIGHT_NS) {
-            this._buildRoadNS(group, worldX, worldZ, cx, cz, collidables);
+            this._buildRoadNS(group, meshes, worldX, worldZ, cx, cz, collidables);
             this._buildSideBuildings(group, meshes, chunkSigns, worldX, worldZ, 'ns', cx, cz, collidables);
             this._buildObstacles(group, meshes, worldX, worldZ, 'ns', cx, cz, collidables);
         } else if (type === CHUNK_STRAIGHT_EW) {
-            this._buildRoadEW(group, worldX, worldZ, cx, cz, collidables);
+            this._buildRoadEW(group, meshes, worldX, worldZ, cx, cz, collidables);
             this._buildSideBuildings(group, meshes, chunkSigns, worldX, worldZ, 'ew', cx, cz, collidables);
             this._buildObstacles(group, meshes, worldX, worldZ, 'ew', cx, cz, collidables);
         } else if (type === CHUNK_CROSS) {
@@ -473,7 +474,9 @@ export class CyberpunkScene {
         }
 
         this.scene.add(group);
-        this.chunks.set(key, { group, meshes, signs: chunkSigns, collidables, type, cx, cz });
+        const rooftopBillboards = this._chunkRBs || [];
+        this._chunkRBs = null;
+        this.chunks.set(key, { group, meshes, signs: chunkSigns, collidables, type, cx, cz, rooftopBillboards });
     }
 
     _removeChunk(key, chunk) {
@@ -492,6 +495,17 @@ export class CyberpunkScene {
         }
         // Remove signs
         this.signs = this.signs.filter(s => !chunk.signs.includes(s));
+        // Dispose rooftop billboard textures
+        if (chunk.rooftopBillboards) {
+            for (const rb of chunk.rooftopBillboards) {
+                if (rb.texture) rb.texture.dispose();
+            }
+        }
+        // Clean spark references
+        if (this._sparkMeshes) {
+            const meshSet = new Set(chunk.meshes);
+            this._sparkMeshes = this._sparkMeshes.filter(s => !meshSet.has(s));
+        }
         // Remove traffic vehicles from this chunk
         this.trafficVehicles = this.trafficVehicles.filter(tv => {
             if (tv._chunkKey === key) {
@@ -505,7 +519,7 @@ export class CyberpunkScene {
 
     /* ── Road builders ── */
 
-    _buildRoadNS(group, wx, wz, cx, cz, collidables) {
+    _buildRoadNS(group, meshes, wx, wz, cx, cz, collidables) {
         const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, CHUNK_SIZE);
         const roadMat = this._createRoadMaterial(cx, cz);
         const road = new THREE.Mesh(roadGeo, roadMat);
@@ -536,11 +550,12 @@ export class CyberpunkScene {
             group.add(edge);
         }
 
-        // Street lamps
-        this._addStreetLamps(group, wx, wz, 'ns', cx, cz, collidables);
+        // Street lamps + power lines
+        const lampPosNS = this._addStreetLamps(group, meshes, wx, wz, 'ns', cx, cz, collidables);
+        this._addPowerLines(group, lampPosNS, 'ns');
     }
 
-    _buildRoadEW(group, wx, wz, cx, cz, collidables) {
+    _buildRoadEW(group, meshes, wx, wz, cx, cz, collidables) {
         const roadGeo = new THREE.PlaneGeometry(CHUNK_SIZE, ROAD_WIDTH);
         const roadMat = this._createRoadMaterial(cx, cz);
         const road = new THREE.Mesh(roadGeo, roadMat);
@@ -570,7 +585,9 @@ export class CyberpunkScene {
             group.add(edge);
         }
 
-        this._addStreetLamps(group, wx, wz, 'ew', cx, cz, collidables);
+        // Street lamps + power lines
+        const lampPosEW = this._addStreetLamps(group, meshes, wx, wz, 'ew', cx, cz, collidables);
+        this._addPowerLines(group, lampPosEW, 'ew');
     }
 
     _buildIntersection(group, wx, wz, cx, cz) {
@@ -619,7 +636,7 @@ export class CyberpunkScene {
         group.add(ewStripes);
     }
 
-    _addStreetLamps(group, wx, wz, dir, cx, cz, collidables) {
+    _addStreetLamps(group, meshes, wx, wz, dir, cx, cz, collidables) {
         const poleMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.7, roughness: 0.3 });
         const positions = dir === 'ns'
             ? [{ x: wx - ROAD_WIDTH / 2 - 1, z: wz - 15 }, { x: wx + ROAD_WIDTH / 2 + 1, z: wz + 15 }]
@@ -642,7 +659,110 @@ export class CyberpunkScene {
             const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), lampMat);
             lamp.position.set(p.x, 7.1, p.z);
             group.add(lamp);
+
+            // Spark particles (15% chance per pole)
+            if (seededRandom(cx, cz, 900 + i) < 0.15) {
+                this._addSpark(group, meshes, p.x, 7.1, p.z);
+            }
         });
+
+        return positions;
+    }
+
+    _addPowerLines(group, positions, dir) {
+        if (positions.length < 2) return;
+
+        const p1 = positions[0];
+        const p2 = positions[1];
+
+        // Cross-road cables (between the two poles)
+        for (let cable = 0; cable < 3; cable++) {
+            const yOff = cable * 0.4;
+            const start = new THREE.Vector3(p1.x, 7.0 - yOff, p1.z);
+            const end = new THREE.Vector3(p2.x, 7.0 - yOff, p2.z);
+            const mid = new THREE.Vector3().lerpVectors(start, end, 0.5);
+            mid.y -= 1.5 + cable * 0.3;
+
+            const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+            const points = curve.getPoints(12);
+            const geo = new THREE.BufferGeometry().setFromPoints(points);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x333344, transparent: true, opacity: 0.7,
+            });
+            group.add(new THREE.Line(geo, mat));
+        }
+
+        // Longitudinal cables (along road from each pole toward chunk edges)
+        for (const p of positions) {
+            for (const d of [-1, 1]) {
+                const edgePos = dir === 'ns'
+                    ? { x: p.x, z: p.z + d * (CHUNK_SIZE / 2) }
+                    : { x: p.x + d * (CHUNK_SIZE / 2), z: p.z };
+
+                const start = new THREE.Vector3(p.x, 7.0, p.z);
+                const end = new THREE.Vector3(edgePos.x, 6.8, edgePos.z);
+                const mid = new THREE.Vector3(
+                    (p.x + edgePos.x) / 2,
+                    5.8,
+                    (p.z + edgePos.z) / 2
+                );
+
+                const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+                const points = curve.getPoints(8);
+                const geo = new THREE.BufferGeometry().setFromPoints(points);
+                const mat = new THREE.LineBasicMaterial({
+                    color: 0x333344, transparent: true, opacity: 0.6,
+                });
+                group.add(new THREE.Line(geo, mat));
+            }
+        }
+    }
+
+    _addSpark(group, meshes, x, y, z) {
+        const count = 6;
+        const pos = new Float32Array(count * 3);
+        const phases = new Float32Array(count);
+        for (let i = 0; i < count; i++) {
+            pos[i * 3] = x + (Math.random() - 0.5) * 0.3;
+            pos[i * 3 + 1] = y + Math.random() * 0.2;
+            pos[i * 3 + 2] = z + (Math.random() - 0.5) * 0.3;
+            phases[i] = Math.random() * Math.PI * 2;
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('phase', new THREE.BufferAttribute(phases, 1));
+
+        const mat = new THREE.ShaderMaterial({
+            uniforms: { time: { value: 0 } },
+            vertexShader: `
+                attribute float phase;
+                varying float vPhase;
+                void main() {
+                    vPhase = phase;
+                    gl_PointSize = 3.0;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform float time;
+                varying float vPhase;
+                void main() {
+                    float flicker = step(0.85, fract(sin(time * 7.0 + vPhase * 100.0) * 43758.5));
+                    if (flicker < 0.5) discard;
+                    gl_FragColor = vec4(1.0, 0.8, 0.2, 0.9);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+
+        const points = new THREE.Points(geo, mat);
+        group.add(points);
+        meshes.push(points);
+
+        if (!this._sparkMeshes) this._sparkMeshes = [];
+        this._sparkMeshes.push(points);
     }
 
     /* ── Elevated Highway builders ── */
@@ -1293,6 +1413,171 @@ export class CyberpunkScene {
             this.signs.push(signObj);
             chunkSigns.push(signObj);
         }
+
+        // Rooftop billboard (on tall buildings, 20% chance)
+        if (h > 18 && seededRandom(cx, cz, 750 + idx) < 0.2) {
+            this._addRooftopBillboard(building, w, h, d, meshes, chunkSigns, cx, cz, idx);
+        }
+    }
+
+    /* ── Rooftop billboards ── */
+
+    _addRooftopBillboard(building, w, h, d, meshes, chunkSigns, cx, cz, idx) {
+        const bbW = 4 + seededRandom(cx, cz, 760 + idx) * 4;
+        const bbH = 3 + seededRandom(cx, cz, 770 + idx) * 3;
+        const roofY = building.position.y + h / 2;
+
+        // Support pole
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.6, roughness: 0.4 });
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3, 6), poleMat);
+        pole.position.set(building.position.x, roofY + 1.5, building.position.z);
+        this.scene.add(pole);
+        meshes.push(pole);
+
+        // Frame
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.5, roughness: 0.5 });
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(bbW + 0.4, bbH + 0.4, 0.15), frameMat);
+        frame.position.set(building.position.x, roofY + 3 + bbH / 2, building.position.z);
+        this.scene.add(frame);
+        meshes.push(frame);
+
+        // Determine billboard type
+        const typeR = seededRandom(cx, cz, 780 + idx);
+        let rbEntry;
+
+        if (typeR < 0.4) {
+            // Type 1: Scrolling text
+            rbEntry = this._createScrollBillboard(building, bbW, bbH, roofY, meshes, cx, cz, idx);
+        } else if (typeR < 0.7) {
+            // Type 2: Color cycling shader
+            rbEntry = this._createColorBillboard(building, bbW, bbH, roofY, meshes);
+        } else {
+            // Type 3: Eye (surveillance)
+            rbEntry = this._createEyeBillboard(building, bbW, bbH, roofY, meshes);
+        }
+
+        if (rbEntry && this._chunkRBs) this._chunkRBs.push(rbEntry);
+    }
+
+    _createScrollBillboard(building, bbW, bbH, roofY, meshes, cx, cz, idx) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 128;
+        const ctx2d = canvas.getContext('2d');
+
+        const phrases = [
+            '新上海 — 未来属于我们', 'NEURODRIVE', '量子引擎 v2.0',
+            '赛博空间', '神经网络在线', 'SYSTEM ONLINE', '意识上传',
+            '阿拉萨卡科技', 'NEON CITY', '数据链路激活',
+        ];
+        const text = phrases[Math.floor(seededRandom(cx, cz, 790 + idx) * phrases.length)];
+        const neonColor = _activePalette.neons[Math.floor(seededRandom(cx, cz, 795 + idx) * _activePalette.neons.length)];
+        const colorStr = '#' + new THREE.Color(neonColor).getHexString();
+
+        ctx2d.fillStyle = '#0a0a15';
+        ctx2d.fillRect(0, 0, 256, 128);
+        ctx2d.font = 'bold 36px monospace';
+        ctx2d.fillStyle = colorStr;
+        ctx2d.textBaseline = 'middle';
+        // Draw text twice for seamless scrolling
+        ctx2d.fillText(text + '   ' + text, 10, 64);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.wrapS = THREE.RepeatWrapping;
+
+        const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.9 });
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(bbW, bbH), mat);
+        screen.position.set(building.position.x, roofY + 3 + bbH / 2, building.position.z + 0.08);
+        this.scene.add(screen);
+        meshes.push(screen);
+
+        return { mesh: screen, type: 'scroll', texture };
+    }
+
+    _createColorBillboard(building, bbW, bbH, roofY, meshes) {
+        const mat = new THREE.ShaderMaterial({
+            uniforms: { time: { value: 0 } },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform float time;
+                varying vec2 vUv;
+                void main() {
+                    float hue = mod(time * 0.2 + vUv.x * 2.0, 1.0);
+                    vec3 col = vec3(
+                        abs(hue * 6.0 - 3.0) - 1.0,
+                        2.0 - abs(hue * 6.0 - 2.0),
+                        2.0 - abs(hue * 6.0 - 4.0)
+                    );
+                    gl_FragColor = vec4(clamp(col, 0.0, 1.0) * 0.8, 1.0);
+                }
+            `,
+        });
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(bbW, bbH), mat);
+        screen.position.set(building.position.x, roofY + 3 + bbH / 2, building.position.z + 0.08);
+        this.scene.add(screen);
+        meshes.push(screen);
+
+        return { mesh: screen, type: 'color' };
+    }
+
+    _createEyeBillboard(building, bbW, bbH, roofY, meshes) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx2d = canvas.getContext('2d');
+
+        this._drawEye(ctx2d, canvas, 0, 0);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.MeshBasicMaterial({ map: texture });
+        const size = Math.min(bbW, bbH);
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+        screen.position.set(building.position.x, roofY + 3 + bbH / 2, building.position.z + 0.08);
+        this.scene.add(screen);
+        meshes.push(screen);
+
+        return { mesh: screen, type: 'eye', texture, canvas, ctx: ctx2d };
+    }
+
+    _drawEye(ctx, canvas, px, py) {
+        const w = canvas.width, h = canvas.height;
+        const cx = w / 2, cy = h / 2;
+
+        ctx.fillStyle = '#0a0a15';
+        ctx.fillRect(0, 0, w, h);
+
+        // Sclera
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, w * 0.4, h * 0.35, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#e8e8e8';
+        ctx.fill();
+
+        // Iris
+        const irisR = h * 0.22;
+        const irisX = cx + px * w * 0.15;
+        const irisY = cy + py * h * 0.1;
+        ctx.beginPath();
+        ctx.arc(irisX, irisY, irisR, 0, Math.PI * 2);
+        ctx.fillStyle = '#00ccff';
+        ctx.fill();
+
+        // Pupil
+        ctx.beginPath();
+        ctx.arc(irisX, irisY, irisR * 0.45, 0, Math.PI * 2);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+
+        // Glint
+        ctx.beginPath();
+        ctx.arc(irisX - irisR * 0.2, irisY - irisR * 0.2, irisR * 0.12, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
     }
 
     /* ── Obstacles ── */
@@ -1801,6 +2086,34 @@ export class CyberpunkScene {
         // Neon sign flicker
         for (const s of this.signs) {
             s.mesh.material.opacity = s.baseOpacity * (0.5 + 0.5 * Math.sin(elapsed * 3 + s.phase));
+        }
+
+        // Animate rooftop billboards
+        for (const [, chunk] of this.chunks) {
+            if (!chunk.rooftopBillboards) continue;
+            for (const rb of chunk.rooftopBillboards) {
+                if (rb.type === 'scroll') {
+                    rb.texture.offset.x += dt * 0.3;
+                } else if (rb.type === 'color' && rb.mesh.material.uniforms) {
+                    rb.mesh.material.uniforms.time.value = elapsed;
+                } else if (rb.type === 'eye') {
+                    // Only update if within 100 units
+                    const dx = vehiclePos.x - rb.mesh.position.x;
+                    const dz = vehiclePos.z - rb.mesh.position.z;
+                    if (dx * dx + dz * dz < 10000) {
+                        const angle = Math.atan2(dx, dz);
+                        this._drawEye(rb.ctx, rb.canvas, Math.sin(angle) * 0.25, 0);
+                        rb.texture.needsUpdate = true;
+                    }
+                }
+            }
+        }
+
+        // Update spark time uniforms
+        if (this._sparkMeshes) {
+            for (const spark of this._sparkMeshes) {
+                if (spark.material.uniforms) spark.material.uniforms.time.value = elapsed;
+            }
         }
 
         // Animate oncoming traffic
