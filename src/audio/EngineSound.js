@@ -5,12 +5,12 @@
    All Web Audio API — no external files
    ═══════════════════════════════════════════ */
 
-// Speed ceiling for each gear (m/s) — gear 1 through 6
-const GEAR_TOPS = [10, 20, 32, 42, 52, 65];
+// Speed ceiling for each gear (m/s) — gear 1 through 5
+const GEAR_TOPS = [14, 26, 38, 50, 65];
 const NUM_GEARS = GEAR_TOPS.length;
-const UPSHIFT_POINT = 0.88;   // shift up at 88% of gear range
-const DOWNSHIFT_POINT = 0.18; // shift down at 18% of gear range
-const SHIFT_COOLDOWN = 0.35;  // seconds between shifts
+const UPSHIFT_POINT = 0.92;   // shift up at 92% of gear range
+const DOWNSHIFT_POINT = 0.22; // shift down at 22% of gear range
+const SHIFT_COOLDOWN = 0.55;  // seconds between shifts
 
 export class EngineSound {
     constructor() {
@@ -163,10 +163,11 @@ export class EngineSound {
         const rpmRate = targetRPM > this._rpm ? 8 : 5;
         this._rpm += (targetRPM - this._rpm) * (1 - Math.exp(-rpmRate * dt));
 
-        // ── 3. Engine frequency — wider sweep per gear ──
-        // Idle ~35Hz, redline ~175Hz. Higher gears have slightly higher base.
-        const gearOffset = gi2 * 4; // subtle pitch rise per gear
-        const baseFreq = 35 + gearOffset + this._rpm * 140;
+        // ── 3. Engine frequency — sweep per gear ──
+        // Idle ~30Hz, redline ~120Hz. Each gear adds +6Hz base for
+        // a clear RPM drop on upshift while still climbing overall.
+        const gearOffset = gi2 * 6;
+        const baseFreq = 30 + gearOffset + this._rpm * 90;
         this._engineOsc1.frequency.setTargetAtTime(baseFreq, now, 0.04);
         this._engineOsc2.frequency.setTargetAtTime(baseFreq, now, 0.04);
         this._harmonicOsc.frequency.setTargetAtTime(baseFreq * 2, now, 0.04);
