@@ -637,7 +637,7 @@ export class CyberpunkScene {
     }
 
     _addStreetLamps(group, meshes, wx, wz, dir, cx, cz, collidables) {
-        const poleMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.7, roughness: 0.3 });
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.7, roughness: 0.3, emissive: 0x222222, emissiveIntensity: 0.6 });
         const positions = dir === 'ns'
             ? [{ x: wx - ROAD_WIDTH / 2 - 1, z: wz - 15 }, { x: wx + ROAD_WIDTH / 2 + 1, z: wz + 15 }]
             : [{ x: wx - 15, z: wz - ROAD_WIDTH / 2 - 1 }, { x: wx + 15, z: wz + ROAD_WIDTH / 2 + 1 }];
@@ -659,6 +659,16 @@ export class CyberpunkScene {
             const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), lampMat);
             lamp.position.set(p.x, 7.1, p.z);
             group.add(lamp);
+
+            // Downward light cone — apex at lamp, spreads ~2 units wide over 4 units down
+            const coneGeo = new THREE.ConeGeometry(1.8, 4.0, 12, 1, true);
+            const coneMat = new THREE.MeshBasicMaterial({
+                color, transparent: true, opacity: 0.07,
+                side: THREE.BackSide, depthWrite: false,
+            });
+            const cone = new THREE.Mesh(coneGeo, coneMat);
+            cone.position.set(p.x, 7.1 - 2.0, p.z); // center of height so apex sits at lamp
+            group.add(cone);
 
             // Spark particles (15% chance per pole)
             if (seededRandom(cx, cz, 900 + i) < 0.15) {
@@ -1795,7 +1805,7 @@ export class CyberpunkScene {
 
             // Light housing
             const houseGeo = new THREE.BoxGeometry(0.5, 1.5, 0.3);
-            const houseMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.5 });
+            const houseMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.5, emissive: 0x111111, emissiveIntensity: 0.6 });
             const house = new THREE.Mesh(houseGeo, houseMat);
             house.position.set(p.x, 5.3, p.z);
             house.rotation.y = p.ry;
