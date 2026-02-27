@@ -8,10 +8,10 @@ import { Terminal } from './terminal/Terminal.js';
 import { GameSettings } from './settings/GameSettings.js';
 
 // Heavy simulation modules — lazy-loaded on first simulation start
-let CyberpunkScene, Vehicle, Segmenter, DataCollector, Exporter, TextureManager, LiveStreamClient, LofiRadio;
+let CyberpunkScene, Vehicle, Segmenter, DataCollector, Exporter, TextureManager, LiveStreamClient, LofiRadio, EngineSound;
 async function loadSimModules() {
     if (CyberpunkScene) return; // already loaded
-    const [scene, vehicle, seg, dc, exp, tm, lsc, radio] = await Promise.all([
+    const [scene, vehicle, seg, dc, exp, tm, lsc, radio, engine] = await Promise.all([
         import('./scene/CyberpunkScene.js'),
         import('./vehicle/Vehicle.js'),
         import('./segmentation/Segmenter.js'),
@@ -20,6 +20,7 @@ async function loadSimModules() {
         import('./textures/TextureManager.js'),
         import('./textures/LiveStreamClient.js'),
         import('./audio/LofiRadio.js'),
+        import('./audio/EngineSound.js'),
     ]);
     CyberpunkScene = scene.CyberpunkScene;
     Vehicle = vehicle.Vehicle;
@@ -29,6 +30,7 @@ async function loadSimModules() {
     TextureManager = tm.TextureManager;
     LiveStreamClient = lsc.LiveStreamClient;
     LofiRadio = radio.LofiRadio;
+    EngineSound = engine.EngineSound;
 }
 
 /* ── Scrolling Chinese text overlay ── */
@@ -265,6 +267,10 @@ class App {
         // Scrolling Chinese text overlay
         if (!this._scrollText) this._scrollText = new _ScrollText();
 
+        // Start engine sound (always on during simulation)
+        if (!this._engine) this._engine = new EngineSound();
+        this._engine.start();
+
         // Start game loop
         this.running = true;
         this._lastTime = performance.now();
@@ -320,6 +326,9 @@ class App {
         // Lo-fi radio scheduling
         if (this._radio) this._radio.update(dt);
 
+        // Engine sound
+        if (this._engine) this._engine.update(dt, this.vehicle);
+
         // FPS counter
         this._fpsFrames++;
         this._fpsTime += dt;
@@ -354,9 +363,10 @@ class App {
         // Stop recording
         this.collector.stopSession();
 
-        // Clean up scrolling text and radio
+        // Clean up scrolling text, radio, and engine
         if (this._scrollText) this._scrollText.cleanup();
         if (this._radio) { this._radio.dispose(); this._radio = null; }
+        if (this._engine) { this._engine.dispose(); this._engine = null; }
         this._updateRadioHud(false);
 
         // Hide canvas, VHS overlay, and FPS counter, show terminal
