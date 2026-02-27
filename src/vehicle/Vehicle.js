@@ -1,11 +1,17 @@
 /* ═══════════════════════════════════════════
    NEURODRIVE — Vehicle Controller
-   Low-poly cyberpunk car with keyboard controls
+   AE86 Sprinter Trueno (Panda) with
+   keyboard controls & drift physics
    ═══════════════════════════════════════════ */
 
 import * as THREE from 'three';
 
+/* ── AE86 Panda Trueno colors ── */
+const AE86_WHITE = 0xf0f0f0;   // High-vis panda white
+const AE86_BLACK = 0x1a1a1a;   // Lower body / bumper black
+const GLASS_TINT = 0x224466;
 const NEON_UNDERGLOW = 0x00ffff;
+const NEON_TRIM = 0x00ffcc;
 
 export class Vehicle {
     constructor(scene) {
@@ -15,24 +21,39 @@ export class Vehicle {
         this.position = new THREE.Vector3(0, 0, 0);
         this.rotation = new THREE.Euler(0, 0, 0);
         this.velocity = 0;        // m/s forward
+        this.lateralVelocity = 0; // m/s sideways (drift)
         this.steerAngle = 0;      // radians
         this.throttle = 0;        // 0..1
         this.brake = 0;           // 0..1
         this.handbrake = false;
+        this.drifting = false;
+        this._driftAngle = 0;     // visual body rotation offset during drift
 
-        // Constants
-        this.maxSpeed = 60;       // m/s (~216 km/h)
-        this.acceleration = 20;   // m/s²
-        this.brakeForce = 35;     // m/s²
+        // Constants — tuned to feel like a light FR coupe
+        this.maxSpeed = 55;       // m/s (~198 km/h)
+        this.acceleration = 18;   // m/s²
+        this.brakeForce = 30;     // m/s²
         this.friction = 5;        // m/s²
-        this.maxSteer = 0.6;      // radians
-        this.steerSpeed = 2.5;    // rad/s
-        this.steerReturn = 4.0;   // rad/s return to center
+        this.maxSteer = 0.65;     // radians
+        this.steerSpeed = 2.8;    // rad/s
+        this.steerReturn = 4.5;   // rad/s return to center
+
+        // Drift constants
+        this.driftSteerMultiplier = 1.8;
+        this.driftMaxSteer = 1.0;
+        this.driftLateralFriction = 3.0;
+        this.driftLateralKick = 0.6;
+        this.driftGrip = 0.15;
 
         // Collision state
         this.boundingBox = new THREE.Box3();
-        this._collisionCooldowns = new Map(); // mesh -> cooldown timer
-        this._collisionCooldownTime = 0.3;    // seconds
+        this._collisionCooldowns = new Map();
+        this._collisionCooldownTime = 0.3;
+
+        // Reusable vectors (avoid per-frame allocation)
+        this._forward = new THREE.Vector3();
+        this._right = new THREE.Vector3();
+        this._fwd = new THREE.Vector3();
 
         // Input state
         this.keys = {
@@ -47,91 +68,204 @@ export class Vehicle {
         this._bindInput();
     }
 
+    /* ═══════════════════════════════════════
+       AE86 SPRINTER TRUENO — Low-Poly Build
+       Panda (white/black) two-tone
+       ═══════════════════════════════════════ */
+
     _buildMesh() {
         this.group = new THREE.Group();
 
-        // Main body — low-poly wedge shape
-        const bodyGeo = new THREE.BoxGeometry(2.0, 0.6, 4.5);
-        const bodyMat = new THREE.MeshStandardMaterial({
-            color: 0x111111,
-            roughness: 0.3,
-            metalness: 0.8,
+        // ── Shared materials ──
+        const whiteMat = new THREE.MeshStandardMaterial({
+            color: AE86_WHITE, roughness: 0.35, metalness: 0.15,
+            emissive: AE86_WHITE, emissiveIntensity: 0.12, // subtle self-glow for visibility
         });
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
-        body.position.y = 0.5;
-        this.group.add(body);
+        const blackMat = new THREE.MeshStandardMaterial({
+            color: AE86_BLACK, roughness: 0.5, metalness: 0.3,
+        });
+        const glassMat = new THREE.MeshStandardMaterial({
+            color: GLASS_TINT, roughness: 0.1, metalness: 0.4,
+            transparent: true, opacity: 0.55,
+        });
 
-        // Cabin — smaller box on top
-        const cabinGeo = new THREE.BoxGeometry(1.6, 0.5, 2.0);
-        const cabinMat = new THREE.MeshStandardMaterial({
-            color: 0x0a0a1a,
-            roughness: 0.2,
-            metalness: 0.6,
-            transparent: true,
-            opacity: 0.7,
-        });
-        const cabin = new THREE.Mesh(cabinGeo, cabinMat);
-        cabin.position.y = 1.05;
-        cabin.position.z = -0.3;
+        // ── Lower body (black) ─ AE86 proportions (4.18m × 1.63m × 1.33m) ──
+        const lowerGeo = new THREE.BoxGeometry(1.7, 0.35, 4.2);
+        const lower = new THREE.Mesh(lowerGeo, blackMat);
+        lower.position.y = 0.37;
+        this.group.add(lower);
+
+        // ── Upper body (white) ─ the iconic boxy shape ──
+        const upperGeo = new THREE.BoxGeometry(1.65, 0.3, 4.1);
+        const upper = new THREE.Mesh(upperGeo, whiteMat);
+        upper.position.y = 0.7;
+        this.group.add(upper);
+
+        // ── Front bumper (black, slightly protruding) ──
+        const fBumperGeo = new THREE.BoxGeometry(1.72, 0.2, 0.25);
+        const fBumper = new THREE.Mesh(fBumperGeo, blackMat);
+        fBumper.position.set(0, 0.3, -2.2);
+        this.group.add(fBumper);
+
+        // ── Rear bumper ──
+        const rBumperGeo = new THREE.BoxGeometry(1.72, 0.2, 0.2);
+        const rBumper = new THREE.Mesh(rBumperGeo, blackMat);
+        rBumper.position.set(0, 0.3, 2.15);
+        this.group.add(rBumper);
+
+        // ── Cabin / greenhouse (glass) ──
+        const cabinGeo = new THREE.BoxGeometry(1.45, 0.45, 1.6);
+        const cabin = new THREE.Mesh(cabinGeo, glassMat);
+        cabin.position.set(0, 1.08, -0.1);
         this.group.add(cabin);
 
-        // Underglow
-        const glowGeo = new THREE.PlaneGeometry(2.4, 5.0);
+        // ── Roof panel (white) ──
+        const roofGeo = new THREE.BoxGeometry(1.35, 0.06, 1.5);
+        const roof = new THREE.Mesh(roofGeo, whiteMat);
+        roof.position.set(0, 1.33, -0.1);
+        this.group.add(roof);
+
+        // ── C-pillar / hatchback slope — distinctive AE86 rear ──
+        const hatchGeo = new THREE.BoxGeometry(1.45, 0.35, 0.8);
+        const hatch = new THREE.Mesh(hatchGeo, whiteMat);
+        hatch.position.set(0, 1.02, 1.1);
+        hatch.rotation.x = 0.25; // slight tilt for hatchback look
+        this.group.add(hatch);
+
+        // ── Pop-up headlights (retracted — small bumps with bright lens) ──
+        const popupMat = new THREE.MeshStandardMaterial({
+            color: 0x333333, roughness: 0.3, metalness: 0.6,
+        });
+        for (const side of [-0.55, 0.55]) {
+            const housingGeo = new THREE.BoxGeometry(0.35, 0.18, 0.3);
+            const housing = new THREE.Mesh(housingGeo, popupMat);
+            housing.position.set(side, 0.95, -1.85);
+            this.group.add(housing);
+
+            // Exposed headlight lens (bright, always visible)
+            const lensGeo = new THREE.BoxGeometry(0.28, 0.12, 0.05);
+            const lensMat = new THREE.MeshBasicMaterial({ color: 0xffffee });
+            const lens = new THREE.Mesh(lensGeo, lensMat);
+            lens.position.set(side, 0.94, -2.01);
+            this.group.add(lens);
+        }
+
+        // ── Front turn signals (amber) ──
+        for (const side of [-0.72, 0.72]) {
+            const sigGeo = new THREE.BoxGeometry(0.15, 0.1, 0.08);
+            const sigMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+            const sig = new THREE.Mesh(sigGeo, sigMat);
+            sig.position.set(side, 0.35, -2.18);
+            this.group.add(sig);
+        }
+
+        // ── Tail lights (wide red band — iconic AE86 hatch) ──
+        for (const side of [-0.6, 0.6]) {
+            const tlGeo = new THREE.BoxGeometry(0.35, 0.12, 0.06);
+            const tlMat = new THREE.MeshBasicMaterial({ color: 0xff1122 });
+            const tl = new THREE.Mesh(tlGeo, tlMat);
+            tl.position.set(side, 0.6, 2.13);
+            this.group.add(tl);
+        }
+        // Center garnish between tail lights
+        const garnishGeo = new THREE.BoxGeometry(0.6, 0.06, 0.06);
+        const garnishMat = new THREE.MeshBasicMaterial({ color: 0xcc0000 });
+        const garnish = new THREE.Mesh(garnishGeo, garnishMat);
+        garnish.position.set(0, 0.6, 2.13);
+        this.group.add(garnish);
+
+        // ── Side mirrors ──
+        for (const side of [-0.82, 0.82]) {
+            const mirGeo = new THREE.BoxGeometry(0.12, 0.08, 0.15);
+            const mir = new THREE.Mesh(mirGeo, blackMat);
+            mir.position.set(side, 0.95, -0.7);
+            this.group.add(mir);
+        }
+
+        // ── Fender flares ──
+        const flareMat = new THREE.MeshStandardMaterial({
+            color: AE86_BLACK, roughness: 0.6, metalness: 0.2,
+        });
+        const flarePositions = [
+            { x: -0.88, z: -1.4 }, { x: 0.88, z: -1.4 },
+            { x: -0.88, z: 1.4 }, { x: 0.88, z: 1.4 },
+        ];
+        for (const fp of flarePositions) {
+            const flareGeo = new THREE.BoxGeometry(0.12, 0.22, 0.6);
+            const flare = new THREE.Mesh(flareGeo, flareMat);
+            flare.position.set(fp.x, 0.38, fp.z);
+            this.group.add(flare);
+        }
+
+        // ── Neon trim lines (cyberpunk accent) ──
+        const trimMat = new THREE.MeshBasicMaterial({ color: NEON_TRIM });
+        for (const side of [-1, 1]) {
+            // Lower body accent line
+            const stripGeo = new THREE.BoxGeometry(0.03, 0.04, 3.8);
+            const strip = new THREE.Mesh(stripGeo, trimMat);
+            strip.position.set(side * 0.86, 0.55, 0);
+            this.group.add(strip);
+
+            // Upper door line
+            const doorGeo = new THREE.BoxGeometry(0.03, 0.03, 1.4);
+            const doorLine = new THREE.Mesh(doorGeo, trimMat);
+            doorLine.position.set(side * 0.84, 0.85, -0.1);
+            this.group.add(doorLine);
+        }
+
+        // ── Underglow (brighter, wider for visibility) ──
+        const glowGeo = new THREE.PlaneGeometry(2.2, 5.0);
         const glowMat = new THREE.MeshBasicMaterial({
             color: NEON_UNDERGLOW,
             transparent: true,
-            opacity: 0.3,
+            opacity: 0.5,
             side: THREE.DoubleSide,
         });
         const glow = new THREE.Mesh(glowGeo, glowMat);
         glow.rotation.x = -Math.PI / 2;
-        glow.position.y = 0.05;
+        glow.position.y = 0.06;
         this.group.add(glow);
         this._underglow = glow;
 
-        // Headlights (two small bright boxes)
-        for (const side of [-0.7, 0.7]) {
-            const hlGeo = new THREE.BoxGeometry(0.3, 0.15, 0.05);
-            const hlMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-            const hl = new THREE.Mesh(hlGeo, hlMat);
-            hl.position.set(side, 0.55, -2.28);
-            this.group.add(hl);
+        // ── Headlight glow cones (forward light volume) ──
+        for (const side of [-0.55, 0.55]) {
+            const coneGeo = new THREE.PlaneGeometry(0.6, 3.5);
+            const coneMat = new THREE.MeshBasicMaterial({
+                color: 0xffffdd, transparent: true, opacity: 0.08,
+                side: THREE.DoubleSide, depthWrite: false,
+            });
+            const cone = new THREE.Mesh(coneGeo, coneMat);
+            cone.rotation.x = -Math.PI / 2;
+            cone.position.set(side, 0.15, -3.7);
+            this.group.add(cone);
         }
 
-        // Tail lights (red)
-        for (const side of [-0.8, 0.8]) {
-            const tlGeo = new THREE.BoxGeometry(0.25, 0.1, 0.05);
-            const tlMat = new THREE.MeshBasicMaterial({ color: 0xff0022 });
-            const tl = new THREE.Mesh(tlGeo, tlMat);
-            tl.position.set(side, 0.55, 2.28);
-            this.group.add(tl);
-        }
+        // ── Wheels (Watanabe-style, wider, lower profile) ──
+        const wheelGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.18, 10);
+        const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.85 });
+        const hubGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.19, 6);
+        const hubMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.7, roughness: 0.25 });
 
-        // Neon trim on sides
-        for (const side of [-1, 1]) {
-            const trimGeo = new THREE.BoxGeometry(0.04, 0.04, 4.5);
-            const trimMat = new THREE.MeshBasicMaterial({ color: 0xff0080 });
-            const trim = new THREE.Mesh(trimGeo, trimMat);
-            trim.position.set(side * 1.02, 0.3, 0);
-            this.group.add(trim);
-        }
-
-        // Wheels (simple cylinders)
-        const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 8);
-        const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
         this.wheels = [];
         const wheelPositions = [
-            [-0.9, 0.3, -1.5],
-            [0.9, 0.3, -1.5],
-            [-0.9, 0.3, 1.5],
-            [0.9, 0.3, 1.5],
+            [-0.82, 0.28, -1.4],   // FL
+            [0.82, 0.28, -1.4],    // FR
+            [-0.82, 0.28, 1.4],    // RL
+            [0.82, 0.28, 1.4],     // RR
         ];
         for (const [x, y, z] of wheelPositions) {
+            const wheelGroup = new THREE.Group();
             const wheel = new THREE.Mesh(wheelGeo, wheelMat);
             wheel.rotation.z = Math.PI / 2;
-            wheel.position.set(x, y, z);
-            this.group.add(wheel);
-            this.wheels.push(wheel);
+            wheelGroup.add(wheel);
+
+            const hub = new THREE.Mesh(hubGeo, hubMat);
+            hub.rotation.z = Math.PI / 2;
+            wheelGroup.add(hub);
+
+            wheelGroup.position.set(x, y, z);
+            this.group.add(wheelGroup);
+            this.wheels.push(wheelGroup);
         }
 
         this.group.position.copy(this.position);
@@ -172,11 +306,23 @@ export class Vehicle {
         this.brake = this.keys.backward ? 1 : 0;
         this.handbrake = this.keys.handbrake;
 
-        // Steering
+        const wasDrifting = this.drifting;
+        this.drifting = this.handbrake && Math.abs(this.velocity) > 3;
+
+        // Drift entry — kick lateral velocity from current steering
+        if (this.drifting && !wasDrifting) {
+            const steerDir = this.steerAngle !== 0 ? Math.sign(this.steerAngle) : (Math.random() < 0.5 ? 1 : -1);
+            this.lateralVelocity += steerDir * Math.abs(this.velocity) * this.driftLateralKick;
+        }
+
+        // Steering — more responsive when drifting
+        const currentMaxSteer = this.drifting ? this.driftMaxSteer : this.maxSteer;
+        const currentSteerSpeed = this.drifting ? this.steerSpeed * this.driftSteerMultiplier : this.steerSpeed;
+
         if (this.keys.left) {
-            this.steerAngle = Math.min(this.steerAngle + this.steerSpeed * dt, this.maxSteer);
+            this.steerAngle = Math.min(this.steerAngle + currentSteerSpeed * dt, currentMaxSteer);
         } else if (this.keys.right) {
-            this.steerAngle = Math.max(this.steerAngle - this.steerSpeed * dt, -this.maxSteer);
+            this.steerAngle = Math.max(this.steerAngle - currentSteerSpeed * dt, -currentMaxSteer);
         } else {
             // Return to center
             if (this.steerAngle > 0) {
@@ -196,13 +342,35 @@ export class Vehicle {
             this.velocity -= this.brakeForce * this.brake * dt;
         }
 
-        // Handbrake
-        if (this.handbrake) {
-            this.velocity *= Math.pow(0.2, dt);
+        // Drift physics — reduced forward friction, maintain lateral slide
+        if (this.drifting) {
+            this.velocity *= Math.pow(0.85, dt);
+            this.lateralVelocity += this.steerAngle * Math.abs(this.velocity) * dt * 2.0;
+        } else {
+            // Normal lateral friction
+            if (Math.abs(this.lateralVelocity) > 0.01) {
+                const lateralDecay = Math.pow(this.driftGrip, dt);
+                this.lateralVelocity *= lateralDecay;
+                if (Math.abs(this.lateralVelocity) < 0.5) {
+                    this.lateralVelocity *= Math.pow(0.01, dt);
+                }
+            }
         }
 
-        // Friction
-        if (this.throttle === 0 && this.brake === 0 && !this.handbrake) {
+        // Lateral friction (always, weaker when drifting)
+        const latFriction = this.drifting ? this.driftLateralFriction * 0.3 : this.driftLateralFriction;
+        if (this.lateralVelocity > 0) {
+            this.lateralVelocity = Math.max(0, this.lateralVelocity - latFriction * dt);
+        } else if (this.lateralVelocity < 0) {
+            this.lateralVelocity = Math.min(0, this.lateralVelocity + latFriction * dt);
+        }
+
+        // Clamp lateral velocity
+        const maxLateral = Math.abs(this.velocity) * 0.8;
+        this.lateralVelocity = Math.max(-maxLateral, Math.min(this.lateralVelocity, maxLateral));
+
+        // Normal friction
+        if (this.throttle === 0 && this.brake === 0 && !this.drifting) {
             if (this.velocity > 0) {
                 this.velocity = Math.max(0, this.velocity - this.friction * dt);
             } else if (this.velocity < 0) {
@@ -216,40 +384,54 @@ export class Vehicle {
         // Turning (only at speed)
         const turnFactor = Math.min(1, Math.abs(this.velocity) / 5);
         const turnSign = this.velocity >= 0 ? 1 : -1;
-        this.rotation.y += this.steerAngle * turnSign * turnFactor * dt * 1.5;
+        const turnRate = this.drifting ? 2.0 : 1.5;
+        this.rotation.y += this.steerAngle * turnSign * turnFactor * dt * turnRate;
 
-        // Position update
-        const forward = new THREE.Vector3(0, 0, -1);
-        forward.applyEuler(this.rotation);
-        this.position.addScaledVector(forward, this.velocity * dt);
+        // Position update — forward + lateral (reuse pre-allocated vectors)
+        this._forward.set(0, 0, -1).applyEuler(this.rotation);
+        this.position.addScaledVector(this._forward, this.velocity * dt);
 
-        // Update mesh
+        this._right.set(1, 0, 0).applyEuler(this.rotation);
+        this.position.addScaledVector(this._right, this.lateralVelocity * dt);
+
+        // Update mesh position
         this.group.position.copy(this.position);
-        this.group.rotation.copy(this.rotation);
+
+        // Visual drift angle — car body rotates into the slide
+        const targetDriftAngle = this.drifting
+            ? Math.atan2(this.lateralVelocity, Math.max(Math.abs(this.velocity), 1)) * 0.5
+            : 0;
+        this._driftAngle += (targetDriftAngle - this._driftAngle) * Math.min(1, 8 * dt);
+        this.group.rotation.set(
+            this.rotation.x,
+            this.rotation.y + this._driftAngle,
+            this.rotation.z
+        );
 
         // Spin wheels
         const wheelSpin = this.velocity * dt * 3;
         for (const w of this.wheels) {
-            w.rotation.x += wheelSpin;
+            w.children[0].rotation.x += wheelSpin; // tire
+            w.children[1].rotation.x += wheelSpin; // hub
         }
 
-        // Underglow pulse
+        // Underglow — brighter when drifting
         if (this._underglow) {
-            this._underglow.material.opacity = 0.2 + 0.15 * Math.sin(Date.now() * 0.003);
+            const baseOpacity = this.drifting ? 0.6 : 0.35;
+            this._underglow.material.opacity = baseOpacity + 0.15 * Math.sin(Date.now() * 0.003);
         }
     }
 
     /* ── Collision ── */
 
     _updateBoundingBox() {
-        // Car body is 2.0 x 0.6 x 4.5, approximate the rotated footprint as an AABB
-        const halfW = 1.0;
-        const halfH = 0.5;
-        const halfD = 2.25;
+        // AE86 body is ~1.7 x 0.65 x 4.2
+        const halfW = 0.85;
+        const halfH = 0.65;
+        const halfD = 2.1;
         const cosY = Math.abs(Math.cos(this.rotation.y));
         const sinY = Math.abs(Math.sin(this.rotation.y));
 
-        // Rotated AABB extents on XZ plane
         const extX = halfW * cosY + halfD * sinY;
         const extZ = halfW * sinY + halfD * cosY;
 
@@ -277,14 +459,12 @@ export class Vehicle {
 
         const collisions = [];
         let pushed = false;
-        const PUSH_MARGIN = 0.05; // small extra push to prevent floating-point re-entry
+        const PUSH_MARGIN = 0.05;
 
         for (const col of collidables) {
-            // Re-check AABB after prior push-outs this frame
             if (pushed) this._updateBoundingBox();
             if (!this.boundingBox.intersectsBox(col.box)) continue;
 
-            // Compute overlap and push-out direction (shortest axis)
             const overlapX1 = this.boundingBox.max.x - col.box.min.x;
             const overlapX2 = col.box.max.x - this.boundingBox.min.x;
             const overlapZ1 = this.boundingBox.max.z - col.box.min.z;
@@ -306,31 +486,25 @@ export class Vehicle {
                 case 'building':
                 case 'barrier':
                 case 'pole':
-                    // ALWAYS push out of hard objects (every frame, not cooldown-gated)
                     this.position.x += pushX;
                     this.position.z += pushZ;
                     pushed = true;
 
-                    // Wall-slide: cancel velocity component into the wall
-                    // instead of zeroing all velocity (allows sliding along walls)
                     if (Math.abs(this.velocity) > 0.1) {
+                        this._fwd.set(0, 0, -1).applyEuler(this.rotation);
                         const nx = pushX !== 0 ? Math.sign(pushX) : 0;
                         const nz = pushZ !== 0 ? Math.sign(pushZ) : 0;
-                        const fwd = new THREE.Vector3(0, 0, -1).applyEuler(this.rotation);
-                        const dot = fwd.x * nx + fwd.z * nz;
+                        const dot = this._fwd.x * nx + this._fwd.z * nz;
                         if (dot < 0) {
-                            // Car is heading into wall — remove that component
                             this.velocity *= Math.max(0, 1 + dot);
                         }
                     }
                     break;
 
                 case 'traffic':
-                    // Always push apart
                     this.position.x += pushX * 1.5;
                     this.position.z += pushZ * 1.5;
                     pushed = true;
-                    // Only apply crash effect on first contact
                     if (isNewCollision) {
                         this.velocity *= 0.2;
                         col.mesh.position.x -= pushX * 0.5;
@@ -339,7 +513,6 @@ export class Vehicle {
                     break;
 
                 case 'cone':
-                    // Cones: only respond once (knockback), no persistent push-out
                     if (isNewCollision) {
                         this.velocity *= 0.9;
                         col.mesh.position.x += pushX * 3;
@@ -355,7 +528,6 @@ export class Vehicle {
             }
         }
 
-        // Sync mesh position after all collision resolution
         if (pushed) {
             this.group.position.copy(this.position);
         }

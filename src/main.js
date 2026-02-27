@@ -10,6 +10,8 @@ import { Vehicle } from './vehicle/Vehicle.js';
 import { Segmenter } from './segmentation/Segmenter.js';
 import { DataCollector } from './data/DataCollector.js';
 import { Exporter } from './data/Exporter.js';
+import { TextureManager } from './textures/TextureManager.js';
+import { LiveStreamClient } from './textures/LiveStreamClient.js';
 
 class App {
     constructor() {
@@ -26,6 +28,12 @@ class App {
         this._animFrameId = null;
         this._captureRequested = false;
         this._vhsEl = document.getElementById('vhs-timestamp');
+        this._vhsTimer = 0;
+
+        // FPS counter
+        this._fpsFrames = 0;
+        this._fpsTime = 0;
+        this._fpsEl = null;
 
         this._init();
     }
@@ -57,14 +65,26 @@ class App {
         }
     }
 
-    _startSimulation() {
+    async _startSimulation() {
         // Hide terminal, show canvas
         this.terminal.hide();
         this.canvasEl.style.display = 'block';
 
         // Initialize Three.js scene and vehicle
         if (!this.scene) {
-            this.scene = new CyberpunkScene(this.canvasEl);
+            // Load pre-generated textures (Layer 1)
+            const textureManager = new TextureManager();
+            await textureManager.loadAll();
+
+            this.scene = new CyberpunkScene(this.canvasEl, textureManager);
+
+            // Initialize live stream client (Layer 2)
+            this._liveClient = new LiveStreamClient(
+                this.scene.getRenderer(),
+                this.scene.scene,
+                this.scene.camera
+            );
+            this.scene.liveStreamClient = this._liveClient;
         }
         if (!this.vehicle) {
             this.vehicle = new Vehicle(this.scene.scene);
@@ -92,18 +112,33 @@ class App {
                 const newMode = this.collector.mode === 'manual' ? 'continuous' : 'manual';
                 this.collector.setMode(newMode);
             }
+            // Toggle live StreamDiffusion mode with L
+            if (e.code === 'KeyL' && this._liveClient) {
+                const active = this._liveClient.toggle();
+                console.log(`[LiveStream] ${active ? 'Connecting to server...' : 'Disconnected'}`);
+            }
         };
         window.addEventListener('keydown', this._captureKeyHandler);
 
         // Show VHS timestamp
         if (this._vhsEl) this._vhsEl.style.display = 'block';
 
+        // FPS counter overlay
+        if (!this._fpsEl) {
+            this._fpsEl = document.createElement('div');
+            this._fpsEl.style.cssText = 'position:fixed;top:8px;left:8px;color:#0f0;font:bold 14px monospace;z-index:9999;text-shadow:0 0 4px #000;pointer-events:none;';
+            document.body.appendChild(this._fpsEl);
+        }
+        this._fpsEl.style.display = 'block';
+        this._fpsFrames = 0;
+        this._fpsTime = 0;
+
         // Start game loop
         this.running = true;
         this._lastTime = performance.now();
         this._gameLoop();
 
-        console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | ESC=返回菜单');
+        console.log('[系统] 模拟启动 — WASD/方向键驾驶 | C=采集帧 | T=切换连续采集 | E=调色板 | L=实时风格化 | ESC=返回菜单');
     }
 
     _gameLoop() {
@@ -135,13 +170,25 @@ class App {
         );
         this._captureRequested = false;
 
-        // VHS timestamp
-        if (this._vhsEl) {
+        // VHS timestamp — throttled to 1Hz
+        this._vhsTimer += dt;
+        if (this._vhsEl && this._vhsTimer >= 1) {
+            this._vhsTimer = 0;
             const d = new Date();
             const pad = (n) => String(n).padStart(2, '0');
             const date = `${pad(d.getMonth() + 1)}.${pad(d.getDate())}.${d.getFullYear()}`;
             const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
             this._vhsEl.innerHTML = `<span class="rec-dot"></span>REC  ${date}  ${time}\nPLAY  \u25B6`;
+        }
+
+        // FPS counter
+        this._fpsFrames++;
+        this._fpsTime += dt;
+        if (this._fpsTime >= 0.5) {
+            const fps = this._fpsFrames / this._fpsTime;
+            if (this._fpsEl) this._fpsEl.textContent = `${fps.toFixed(1)} FPS`;
+            this._fpsFrames = 0;
+            this._fpsTime = 0;
         }
 
         this._animFrameId = requestAnimationFrame(() => this._gameLoop());
@@ -160,12 +207,18 @@ class App {
             this._captureKeyHandler = null;
         }
 
+        // Disconnect live stream if active
+        if (this._liveClient) {
+            this._liveClient.disconnect();
+        }
+
         // Stop recording
         this.collector.stopSession();
 
-        // Hide canvas and VHS overlay, show terminal
+        // Hide canvas, VHS overlay, and FPS counter, show terminal
         this.canvasEl.style.display = 'none';
         if (this._vhsEl) this._vhsEl.style.display = 'none';
+        if (this._fpsEl) this._fpsEl.style.display = 'none';
         this.terminal.show();
     }
 

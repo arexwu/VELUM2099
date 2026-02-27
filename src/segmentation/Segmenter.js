@@ -167,7 +167,7 @@ export class Segmenter {
 
             cv.imshow(this.segCanvas, mask);
 
-            this._lastMask = this.segCanvas.toDataURL('image/png');
+            this._lastMask = this.segCtx.getImageData(0, 0, w, h);
             return this._lastMask;
         } catch (err) {
             console.error('[Segmenter] OpenCV 分割错误:', err);
@@ -218,7 +218,7 @@ export class Segmenter {
         }
 
         this.segCtx.putImageData(outData, 0, 0);
-        this._lastMask = this.segCanvas.toDataURL('image/png');
+        this._lastMask = outData;
         return this._lastMask;
     }
 

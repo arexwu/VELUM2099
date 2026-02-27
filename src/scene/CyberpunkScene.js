@@ -9,7 +9,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
+import { ProceduralTextures } from '../textures/ProceduralTextures.js';
 
 /* ── Retro shader ── */
 const RetroShader = {
@@ -32,17 +33,81 @@ const RetroShader = {
     uniform float scanlineIntensity;
     uniform float chromaticAberration;
     varying vec2 vUv;
+
+    // Pseudo-random hash
+    float hash(float n) { return fract(sin(n) * 43758.5453); }
+
     void main() {
+      vec2 uv = vUv;
+
+      // ── VHS horizontal jitter ──
+      // Occasional scanline-thin horizontal shift
+      float jitterLine = floor(uv.y * 300.0 + time * 40.0);
+      float jitterAmount = (hash(jitterLine + floor(time * 7.0)) - 0.5) * 0.0006;
+      // Stronger glitch burst ~1% of the time
+      float burst = step(0.99, hash(floor(time * 4.0)));
+      jitterAmount += burst * (hash(jitterLine * 0.1 + time) - 0.5) * 0.003;
+      uv.x += jitterAmount;
+
+      // ── VHS tracking wobble ──
+      // Slow sine-wave vertical warp
+      float wobble = sin(uv.y * 3.0 + time * 1.5) * 0.00015;
+      uv.x += wobble;
+
+      // ── Chromatic aberration (shifted UV) ──
       float ca = chromaticAberration;
-      float r = texture2D(tDiffuse, vUv + vec2(ca, 0.0)).r;
-      float g = texture2D(tDiffuse, vUv).g;
-      float b = texture2D(tDiffuse, vUv - vec2(ca, 0.0)).b;
+      float r = texture2D(tDiffuse, uv + vec2(ca, 0.0)).r;
+      float g = texture2D(tDiffuse, uv).g;
+      float b = texture2D(tDiffuse, uv - vec2(ca, 0.0)).b;
       vec3 color = vec3(r, g, b);
-      float scanline = sin(vUv.y * 800.0 + time * 2.0) * scanlineIntensity;
+
+      // ── VHS brightness flicker ──
+      float flicker = 1.0 + (hash(floor(time * 12.0)) - 0.5) * 0.008;
+      color *= flicker;
+
+      // ── Scanlines ──
+      float scanline = sin(uv.y * 800.0 + time * 2.0) * scanlineIntensity;
       color -= scanline;
-      float vignette = smoothstep(0.9, 0.4, length(vUv - 0.5));
+
+      // ── VHS tape noise band ──
+      // Thin noisy band that drifts up the screen
+      float bandY = fract(time * 0.08);
+      float bandDist = abs(uv.y - bandY);
+      float band = smoothstep(0.02, 0.0, bandDist);
+      color += band * (hash(uv.x * 100.0 + time * 50.0) - 0.5) * 0.03;
+
+      // ── Vignette ──
+      float vignette = smoothstep(0.9, 0.4, length(uv - 0.5));
       color *= vignette * 0.1 + 0.9;
+
       gl_FragColor = vec4(color, 1.0);
+    }
+  `,
+};
+
+/* ── Live blend shader (Layer 2) ── */
+const LiveBlendShader = {
+    uniforms: {
+        tDiffuse: { value: null },
+        tLiveStream: { value: null },
+        blendFactor: { value: 0.0 },
+    },
+    vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+    fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform sampler2D tLiveStream;
+    uniform float blendFactor;
+    varying vec2 vUv;
+    void main() {
+      vec4 original = texture2D(tDiffuse, vUv);
+      vec4 stylized = texture2D(tLiveStream, vUv);
+      gl_FragColor = mix(original, stylized, blendFactor);
     }
   `,
 };
@@ -98,7 +163,7 @@ function randomNeon() { return _activePalette.neons[Math.floor(Math.random() * _
 
 /* ── Grid constants ── */
 const CHUNK_SIZE = 60;          // world units per chunk
-const ROAD_WIDTH = 14;          // width of a road
+const ROAD_WIDTH = 28;          // width of a road
 const VIEW_RADIUS = 5;          // generate chunks in a 5-chunk radius
 const CLEANUP_RADIUS = 7;       // remove chunks beyond this radius
 
@@ -122,8 +187,11 @@ const CHUNK_T_NORTH = 3;      // T from south, splits east-west
 const CHUNK_EMPTY = 4;        // Building-only block (no road)
 
 export class CyberpunkScene {
-    constructor(canvas) {
+    constructor(canvas, textureManager) {
         this.canvas = canvas;
+        this.textureManager = textureManager || null;
+        this.proceduralTextures = new ProceduralTextures();
+        this.liveStreamClient = null; // Set externally for Layer 2
         this.clock = new THREE.Clock();
         this.chunks = new Map();  // key "cx,cz" -> { group, meshes[], signs[], collidables[] }
         this.signs = [];
@@ -136,6 +204,35 @@ export class CyberpunkScene {
         this._dashGeoNS = new THREE.PlaneGeometry(0.15, 2);
         this._dashGeoEW = new THREE.PlaneGeometry(2, 0.15);
         this._dashMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+
+        // Item 1: Shared window geometry
+        this._winGeo = new THREE.PlaneGeometry(0.6, 0.8);
+        this._winMat = new THREE.MeshBasicMaterial({ vertexColors: false });
+
+        // Item 2: Texture clone cache
+        this._texCache = new Map();
+
+        // Item 3: Shared crosswalk stripe geometries/material
+        this._stripeGeoNS = new THREE.PlaneGeometry(0.8, 3);
+        this._stripeGeoEW = new THREE.PlaneGeometry(3, 0.8);
+        this._stripeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+        // Item 6: Pre-allocated vectors for update()
+        this._camTarget = new THREE.Vector3();
+        this._camOffset = new THREE.Vector3();
+        this._lookTarget = new THREE.Vector3();
+
+        // Item 6: Pre-allocated for getCollidables()
+        this._trafficBox = new THREE.Box3();
+        this._trafficSize = new THREE.Vector3(1.8, 0.7, 3.5);
+
+        // Item 9: Geometry cache for buildings
+        this._geoCache = new Map();
+
+        // Item 10: Frustum culling
+        this._frustum = new THREE.Frustum();
+        this._projScreenMatrix = new THREE.Matrix4();
+        this._chunkBox = new THREE.Box3();
 
         this._initRenderer();
         this._initScene();
@@ -272,7 +369,7 @@ export class CyberpunkScene {
 
         // Ground plane for every chunk
         const groundGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
-        const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2a44, roughness: 0.85 });
+        const groundMat = this._createGroundMaterial(cx, cz);
         const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
         ground.position.set(worldX, -0.01, worldZ);
@@ -330,7 +427,7 @@ export class CyberpunkScene {
 
     _buildRoadNS(group, wx, wz, cx, cz, collidables) {
         const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, CHUNK_SIZE);
-        const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.15 });
+        const roadMat = this._createRoadMaterial(cx, cz);
         const road = new THREE.Mesh(roadGeo, roadMat);
         road.rotation.x = -Math.PI / 2;
         road.position.set(wx, 0.005, wz);
@@ -365,7 +462,7 @@ export class CyberpunkScene {
 
     _buildRoadEW(group, wx, wz, cx, cz, collidables) {
         const roadGeo = new THREE.PlaneGeometry(CHUNK_SIZE, ROAD_WIDTH);
-        const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.15 });
+        const roadMat = this._createRoadMaterial(cx, cz);
         const road = new THREE.Mesh(roadGeo, roadMat);
         road.rotation.x = -Math.PI / 2;
         road.position.set(wx, 0.005, wz);
@@ -400,27 +497,46 @@ export class CyberpunkScene {
         // Large square road surface
         const size = ROAD_WIDTH + 8;
         const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
-        const mat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.15 });
+        const mat = this._createRoadMaterial(cx, cz);
         const road = new THREE.Mesh(geo, mat);
         road.rotation.x = -Math.PI / 2;
         road.position.set(wx, 0.005, wz);
         group.add(road);
 
-        // Crosswalk stripes in 4 directions
-        for (const dir of ['n', 's', 'e', 'w']) {
+        // Crosswalk stripes — InstancedMesh (NS and EW)
+        const offset = ROAD_WIDTH / 2 + 2;
+        const _mat4 = new THREE.Matrix4();
+        const _rotX = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+
+        // NS stripes (n + s directions): 7 stripes × 2 = 14
+        const nsStripes = new THREE.InstancedMesh(this._stripeGeoNS, this._stripeMat, 14);
+        let nsIdx = 0;
+        for (const dir of ['n', 's']) {
+            const zOff = dir === 'n' ? -offset : offset;
             for (let i = -3; i <= 3; i++) {
-                const sGeo = new THREE.PlaneGeometry(dir === 'n' || dir === 's' ? 0.8 : 3, dir === 'n' || dir === 's' ? 3 : 0.8);
-                const sMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-                const stripe = new THREE.Mesh(sGeo, sMat);
-                stripe.rotation.x = -Math.PI / 2;
-                const offset = ROAD_WIDTH / 2 + 2;
-                if (dir === 'n') stripe.position.set(wx + i * 1.5, 0.02, wz - offset);
-                else if (dir === 's') stripe.position.set(wx + i * 1.5, 0.02, wz + offset);
-                else if (dir === 'e') stripe.position.set(wx + offset, 0.02, wz + i * 1.5);
-                else stripe.position.set(wx - offset, 0.02, wz + i * 1.5);
-                group.add(stripe);
+                _mat4.identity();
+                _mat4.setPosition(wx + i * 1.5, 0.02, wz + zOff);
+                _mat4.multiply(_rotX);
+                // Compose: translate then rotate
+                _mat4.makeTranslation(wx + i * 1.5, 0.02, wz + zOff).multiply(_rotX);
+                nsStripes.setMatrixAt(nsIdx++, _mat4);
             }
         }
+        nsStripes.instanceMatrix.needsUpdate = true;
+        group.add(nsStripes);
+
+        // EW stripes (e + w directions): 7 stripes × 2 = 14
+        const ewStripes = new THREE.InstancedMesh(this._stripeGeoEW, this._stripeMat, 14);
+        let ewIdx = 0;
+        for (const dir of ['e', 'w']) {
+            const xOff = dir === 'e' ? offset : -offset;
+            for (let i = -3; i <= 3; i++) {
+                _mat4.makeTranslation(wx + xOff, 0.02, wz + i * 1.5).multiply(_rotX);
+                ewStripes.setMatrixAt(ewIdx++, _mat4);
+            }
+        }
+        ewStripes.instanceMatrix.needsUpdate = true;
+        group.add(ewStripes);
     }
 
     _addStreetLamps(group, wx, wz, dir, cx, cz, collidables) {
@@ -455,8 +571,10 @@ export class CyberpunkScene {
         const r = seededRandom(cx, cz, seed);
         const shape = new THREE.Shape();
 
+        let cacheExtra = '';
         if (r < 0.4) {
             // Plain rectangle
+            cacheExtra = '0';
             shape.moveTo(-w / 2, -d / 2);
             shape.lineTo(w / 2, -d / 2);
             shape.lineTo(w / 2, d / 2);
@@ -466,6 +584,7 @@ export class CyberpunkScene {
             // L-shape — corner notch cut out
             const notchW = w * (0.3 + seededRandom(cx, cz, seed + 1) * 0.2);
             const notchD = d * (0.3 + seededRandom(cx, cz, seed + 2) * 0.2);
+            cacheExtra = `1_${notchW.toFixed(1)}_${notchD.toFixed(1)}`;
             shape.moveTo(-w / 2, -d / 2);
             shape.lineTo(w / 2, -d / 2);
             shape.lineTo(w / 2, d / 2 - notchD);
@@ -477,6 +596,7 @@ export class CyberpunkScene {
             // Notched/stepped — inset on one side
             const insetW = w * (0.2 + seededRandom(cx, cz, seed + 3) * 0.15);
             const insetD = d * (0.25 + seededRandom(cx, cz, seed + 4) * 0.2);
+            cacheExtra = `2_${insetW.toFixed(1)}_${insetD.toFixed(1)}`;
             shape.moveTo(-w / 2, -d / 2);
             shape.lineTo(w / 2, -d / 2);
             shape.lineTo(w / 2, -d / 2 + insetD);
@@ -486,13 +606,119 @@ export class CyberpunkScene {
             shape.closePath();
         }
 
+        const cacheKey = `${w.toFixed(1)}_${h.toFixed(1)}_${d.toFixed(1)}_${cacheExtra}`;
+        const cached = this._geoCache.get(cacheKey);
+        if (cached) return cached;
+
         const geo = new THREE.ExtrudeGeometry(shape, {
             depth: h,
             bevelEnabled: false,
         });
         // Extrude goes along Z — rotate so it goes along Y (upward)
         geo.rotateX(-Math.PI / 2);
+        // Center vertically so geometry spans -h/2 to h/2 (like BoxGeometry)
+        geo.translate(0, -h / 2, 0);
+        this._geoCache.set(cacheKey, geo);
         return geo;
+    }
+
+    /* ── Texture cache helper ── */
+    _getCachedClone(tex, repeatX, repeatY, offsetX = 0, offsetY = 0) {
+        const id = tex.id !== undefined ? tex.id : tex.uuid;
+        const key = `${id}_${repeatX}_${repeatY}_${offsetX}_${offsetY}`;
+        let cached = this._texCache.get(key);
+        if (cached) return cached;
+        cached = tex.clone();
+        cached.wrapS = THREE.RepeatWrapping;
+        cached.wrapT = THREE.RepeatWrapping;
+        cached.repeat.set(repeatX, repeatY);
+        if (offsetX || offsetY) cached.offset.set(offsetX, offsetY);
+        cached.needsUpdate = true;
+        this._texCache.set(key, cached);
+        return cached;
+    }
+
+    /* ── Material factories (Layer 1 texture support) ── */
+
+    _createBuildingMaterial(cx, cz, seedOffset, w, h) {
+        const seed = seededRandom(cx, cz, 50 + seedOffset);
+        const color = new THREE.Color().setHSL(
+            0.55 + seed * 0.35,
+            0.15 + seededRandom(cx, cz, 55 + seedOffset) * 0.25,
+            0.14 + seededRandom(cx, cz, 60 + seedOffset) * 0.16
+        );
+        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.2 });
+
+        // Try loaded textures first, fall back to procedural
+        let hasMap = false;
+        if (this.textureManager) {
+            const tex = this.textureManager.getRandomFacade(seededRandom(cx, cz, 70 + seedOffset));
+            if (tex) {
+                mat.map = this._getCachedClone(tex, w / 8, h / 8);
+                hasMap = true;
+            }
+        }
+        if (!hasMap) {
+            const procTex = this.proceduralTextures.getFacade(
+                seededRandom(cx, cz, 75 + seedOffset),
+                _activePalette
+            );
+            mat.map = this._getCachedClone(procTex, w / 10, h / 10);
+        }
+        return mat;
+    }
+
+    _createRoadMaterial(cx, cz) {
+        const mat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.15 });
+        let hasMap = false;
+        if (this.textureManager) {
+            const tex = this.textureManager.getRoadTexture();
+            if (tex) {
+                mat.map = this._getCachedClone(tex, CHUNK_SIZE / 16, CHUNK_SIZE / 16);
+                hasMap = true;
+            }
+        }
+        if (!hasMap) {
+            const seed = cx !== undefined ? seededRandom(cx, cz, 500) : Math.random();
+            const procTex = this.proceduralTextures.getRoad(seed);
+            mat.map = this._getCachedClone(procTex, CHUNK_SIZE / 12, CHUNK_SIZE / 12);
+        }
+        return mat;
+    }
+
+    _createGroundMaterial(cx, cz) {
+        const mat = new THREE.MeshStandardMaterial({ color: 0x2a2a44, roughness: 0.85 });
+        let hasMap = false;
+        if (this.textureManager) {
+            const tex = this.textureManager.getGroundTexture();
+            if (tex) {
+                mat.map = this._getCachedClone(tex, CHUNK_SIZE / 12, CHUNK_SIZE / 12);
+                hasMap = true;
+            }
+        }
+        if (!hasMap) {
+            const seed = cx !== undefined ? seededRandom(cx, cz, 510) : Math.random();
+            const procTex = this.proceduralTextures.getGround(seed);
+            mat.map = this._getCachedClone(procTex, CHUNK_SIZE / 10, CHUNK_SIZE / 10);
+        }
+        return mat;
+    }
+
+    _createBillboardMaterial(cx, cz, idx) {
+        const mat = new THREE.MeshBasicMaterial({
+            color: randomNeon(), transparent: true, opacity: 0.8,
+        });
+        mat._isNeon = true;
+
+        if (this.textureManager) {
+            const tex = this.textureManager.getBillboardTexture();
+            if (tex) {
+                const cellIdx = Math.abs(Math.floor(seededRandom(cx, cz, 750 + idx) * 8)) % 8;
+                const uvs = this.textureManager.getBillboardUVs(cellIdx);
+                mat.map = this._getCachedClone(tex, uvs.repeat.x, uvs.repeat.y, uvs.offset.x, uvs.offset.y);
+            }
+        }
+        return mat;
     }
 
     _buildSideBuildings(group, meshes, chunkSigns, wx, wz, dir, cx, cz, collidables) {
@@ -505,10 +731,7 @@ export class CyberpunkScene {
                 const d = 5 + seededRandom(cx, cz, 40 + side * 10 + i) * 8;
 
                 const bGeo = this._createBuildingGeo(w, h, d, cx, cz, 900 + side * 10 + i);
-                const bMat = new THREE.MeshStandardMaterial({
-                    color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 50 + i) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 60 + i) * 0.12),
-                    roughness: 0.75, metalness: 0.2,
-                });
+                const bMat = this._createBuildingMaterial(cx, cz, i, w, h);
                 const b = new THREE.Mesh(bGeo, bMat);
 
                 const offset = ROAD_WIDTH / 2 + 5 + seededRandom(cx, cz, 70 + i) * 12;
@@ -544,10 +767,7 @@ export class CyberpunkScene {
                 const d = 5 + seededRandom(cx, cz, 130 + qi * 5 + i) * 8;
 
                 const bGeo = this._createBuildingGeo(w, h, d, cx, cz, 950 + qi * 5 + i);
-                const bMat = new THREE.MeshStandardMaterial({
-                    color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 140 + qi) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 150 + qi) * 0.12),
-                    roughness: 0.75, metalness: 0.2,
-                });
+                const bMat = this._createBuildingMaterial(cx, cz, qi * 5 + i, w, h);
                 const b = new THREE.Mesh(bGeo, bMat);
                 b.position.set(
                     wx + sx * (ROAD_WIDTH / 2 + 6 + i * 8),
@@ -576,10 +796,7 @@ export class CyberpunkScene {
             const d = 5 + seededRandom(cx, cz, 230 + i) * 12;
 
             const bGeo = this._createBuildingGeo(w, h, d, cx, cz, 980 + i);
-            const bMat = new THREE.MeshStandardMaterial({
-                color: new THREE.Color().setHSL(0.65 + seededRandom(cx, cz, 240 + i) * 0.2, 0.3, 0.18 + seededRandom(cx, cz, 250 + i) * 0.12),
-                roughness: 0.75, metalness: 0.2,
-            });
+            const bMat = this._createBuildingMaterial(cx, cz, 200 + i, w, h);
             const b = new THREE.Mesh(bGeo, bMat);
             b.position.set(
                 wx + (seededRandom(cx, cz, 260 + i) - 0.5) * CHUNK_SIZE * 0.7,
@@ -608,17 +825,20 @@ export class CyberpunkScene {
             const mat = new THREE.MeshBasicMaterial({ color });
             mat._isNeon = true;
             const line = new THREE.Mesh(geo, mat);
-            line.position.set(building.position.x, building.position.y + ey - h / 2, building.position.z);
+            line.position.set(building.position.x, building.position.y + ey, building.position.z);
             this.scene.add(line);
             meshes.push(line);
         }
 
-        // Windows
-        const winGeo = new THREE.PlaneGeometry(0.6, 0.8);
+        // Windows — InstancedMesh with per-instance color
         const cols = Math.min(Math.floor(w / 1.5), 6);
         const rows = Math.min(Math.floor(h / 2), 12);
         const faceX = building.position.x + (faceSide < 0 ? 1 : -1) * (w / 2 + 0.01);
+        const rotY = faceSide < 0 ? Math.PI / 2 : -Math.PI / 2;
 
+        // First pass: collect positions and colors
+        const winPositions = [];
+        const winColors = [];
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 if (seededRandom(cx, cz, 400 + idx * 100 + r * 10 + c) < 0.35) continue;
@@ -626,13 +846,33 @@ export class CyberpunkScene {
                 const wc = lit
                     ? new THREE.Color().setHSL(seededRandom(cx, cz, 600 + idx * 100 + r * 10 + c) * 0.25, 0.6, 0.5)
                     : new THREE.Color(0x121225);
-                const wMat = new THREE.MeshBasicMaterial({ color: wc });
-                const win = new THREE.Mesh(winGeo, wMat);
-                win.position.set(faceX, building.position.y - h / 2 + 2 + r * 2, building.position.z - w / 2 + 1.5 + c * 1.5);
-                win.rotation.y = faceSide < 0 ? Math.PI / 2 : -Math.PI / 2;
-                this.scene.add(win);
-                meshes.push(win);
+                winPositions.push(
+                    faceX,
+                    building.position.y - h / 2 + 2 + r * 2,
+                    building.position.z - w / 2 + 1.5 + c * 1.5
+                );
+                winColors.push(wc.r, wc.g, wc.b);
             }
+        }
+
+        if (winPositions.length > 0) {
+            const count = winPositions.length / 3;
+            const winMat = new THREE.MeshBasicMaterial();
+            const winIM = new THREE.InstancedMesh(this._winGeo, winMat, count);
+            const _m4 = new THREE.Matrix4();
+            const _rotM = new THREE.Matrix4().makeRotationY(rotY);
+            const colorAttr = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                _m4.makeTranslation(winPositions[i * 3], winPositions[i * 3 + 1], winPositions[i * 3 + 2]).multiply(_rotM);
+                winIM.setMatrixAt(i, _m4);
+                colorAttr[i * 3] = winColors[i * 3];
+                colorAttr[i * 3 + 1] = winColors[i * 3 + 1];
+                colorAttr[i * 3 + 2] = winColors[i * 3 + 2];
+            }
+            winIM.instanceMatrix.needsUpdate = true;
+            winIM.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+            this.scene.add(winIM);
+            meshes.push(winIM);
         }
 
         // Billboard (occasional)
@@ -640,10 +880,7 @@ export class CyberpunkScene {
             const bbW = 3 + seededRandom(cx, cz, 710 + idx) * 4;
             const bbH = 2 + seededRandom(cx, cz, 720 + idx) * 3;
             const bbGeo = new THREE.PlaneGeometry(bbW, bbH);
-            const bbMat = new THREE.MeshBasicMaterial({
-                color: randomNeon(), transparent: true, opacity: 0.8,
-            });
-            bbMat._isNeon = true;
+            const bbMat = this._createBillboardMaterial(cx, cz, idx);
             const bb = new THREE.Mesh(bbGeo, bbMat);
             bb.position.set(faceX, building.position.y + seededRandom(cx, cz, 730 + idx) * h * 0.2, building.position.z);
             bb.rotation.y = faceSide < 0 ? Math.PI / 2 : -Math.PI / 2;
@@ -660,13 +897,13 @@ export class CyberpunkScene {
     _buildObstacles(group, meshes, wx, wz, dir, cx, cz, collidables) {
         const r = seededRandom(cx, cz, 800);
 
-        // Roadblock barrier (30% chance)
-        if (r < 0.3) {
+        // Roadblock barrier (15% chance)
+        if (r < 0.15) {
             this._addRoadblock(group, meshes, wx, wz, dir, cx, cz, collidables);
         }
 
-        // Oncoming traffic (40% chance)
-        if (seededRandom(cx, cz, 810) < 0.4) {
+        // Oncoming traffic (25% chance)
+        if (seededRandom(cx, cz, 810) < 0.25) {
             this._addOncomingTraffic(wx, wz, dir, cx, cz);
         }
     }
@@ -674,7 +911,7 @@ export class CyberpunkScene {
     _addRoadblock(group, meshes, wx, wz, dir, cx, cz, collidables) {
         // Which lane to block
         const lane = seededRandom(cx, cz, 820) < 0.5 ? -1 : 1;
-        const laneOffset = lane * 3.5;
+        const laneOffset = lane * 7;
         const alongOffset = (seededRandom(cx, cz, 830) - 0.5) * CHUNK_SIZE * 0.5;
 
         // Barrier — striped black/yellow box
@@ -782,7 +1019,7 @@ export class CyberpunkScene {
         ug.position.y = -0.3;
         car.add(ug);
 
-        const lane = 3.5; // oncoming lane
+        const lane = 7; // oncoming lane
         const startZ = (seededRandom(cx, cz, 860) - 0.5) * CHUNK_SIZE * 0.8;
 
         if (dir === 'ns') {
@@ -849,22 +1086,59 @@ export class CyberpunkScene {
         }
     }
 
-    /* ── Rain ── */
+    /* ── Rain (GPU-driven) ── */
     _buildRain() {
         const COUNT = 10000;
         const geo = new THREE.BufferGeometry();
-        const pos = new Float32Array(COUNT * 3);
+        const initialPos = new Float32Array(COUNT * 3);
         const vel = new Float32Array(COUNT);
         for (let i = 0; i < COUNT; i++) {
-            pos[i * 3] = (Math.random() - 0.5) * 200;
-            pos[i * 3 + 1] = Math.random() * 60;
-            pos[i * 3 + 2] = (Math.random() - 0.5) * 200;
+            initialPos[i * 3] = (Math.random() - 0.5) * 200;
+            initialPos[i * 3 + 1] = Math.random() * 60;
+            initialPos[i * 3 + 2] = (Math.random() - 0.5) * 200;
             vel[i] = 0.4 + Math.random() * 0.6;
         }
-        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        const mat = new THREE.PointsMaterial({ color: 0x8888cc, size: 0.08, transparent: true, opacity: 0.5, depthWrite: false });
+        geo.setAttribute('position', new THREE.BufferAttribute(initialPos, 3));
+        geo.setAttribute('initialPos', new THREE.BufferAttribute(initialPos.slice(), 3));
+        geo.setAttribute('velocity', new THREE.BufferAttribute(vel, 1));
+
+        const mat = new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0 },
+                vehiclePosition: { value: new THREE.Vector3() },
+                color: { value: new THREE.Color(0x8888cc) },
+                size: { value: 0.08 },
+                opacity: { value: 0.5 },
+            },
+            vertexShader: `
+                attribute vec3 initialPos;
+                attribute float velocity;
+                uniform float time;
+                uniform vec3 vehiclePosition;
+                uniform float size;
+                void main() {
+                    vec3 pos = initialPos;
+                    // Drop rain: y wraps around 0..61
+                    pos.y = mod(initialPos.y - velocity * time * 60.0, 61.0) - 1.0;
+                    // Center around vehicle
+                    pos.x = mod(initialPos.x - vehiclePosition.x + 100.0, 200.0) - 100.0 + vehiclePosition.x;
+                    pos.z = mod(initialPos.z - vehiclePosition.z + 100.0, 200.0) - 100.0 + vehiclePosition.z;
+                    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                    gl_PointSize = size * (300.0 / -mvPosition.z);
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 color;
+                uniform float opacity;
+                void main() {
+                    gl_FragColor = vec4(color, opacity);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+        });
         this.rainDrops = new THREE.Points(geo, mat);
-        this.rainVelocities = vel;
         this.scene.add(this.rainDrops);
     }
 
@@ -898,9 +1172,24 @@ export class CyberpunkScene {
         this.composer = new EffectComposer(this.renderer);
         this.composer.addPass(new RenderPass(this.scene, this.camera));
         this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.8, 0.4, 0.85));
-        this.composer.addPass(new SMAAPass(window.innerWidth, window.innerHeight));
+
+        // FXAA instead of SMAA (cheaper)
+        this._fxaaPass = new ShaderPass(FXAAShader);
+        const pixelRatio = this.renderer.getPixelRatio();
+        this._fxaaPass.material.uniforms.resolution.value.set(
+            1 / (window.innerWidth * pixelRatio),
+            1 / (window.innerHeight * pixelRatio)
+        );
+        this.composer.addPass(this._fxaaPass);
+
         this.retroPass = new ShaderPass(RetroShader);
         this.composer.addPass(this.retroPass);
+
+        // LiveBlendShader — Layer 2 screen-space stylization overlay
+        this.liveBlendPass = new ShaderPass(LiveBlendShader);
+        this.liveBlendPass.uniforms.blendFactor.value = 0.0;
+        this.liveBlendPass.enabled = false;
+        this.composer.addPass(this.liveBlendPass);
     }
 
     _onResize() {
@@ -909,6 +1198,14 @@ export class CyberpunkScene {
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(w, h);
         this.composer.setSize(w, h);
+        // Update FXAA resolution
+        if (this._fxaaPass) {
+            const pixelRatio = this.renderer.getPixelRatio();
+            this._fxaaPass.material.uniforms.resolution.value.set(
+                1 / (w * pixelRatio),
+                1 / (h * pixelRatio)
+            );
+        }
     }
 
     /* ── Collision helpers ── */
@@ -937,10 +1234,7 @@ export class CyberpunkScene {
             const dz = vehiclePos.z - pos.z;
             if (dx * dx + dz * dz > rSq) continue;
 
-            const box = new THREE.Box3().setFromCenterAndSize(
-                pos,
-                new THREE.Vector3(1.8, 0.7, 3.5)
-            );
+            const box = new THREE.Box3().setFromCenterAndSize(pos, this._trafficSize);
             result.push({ box, mesh: tv.mesh, type: 'traffic' });
         }
 
@@ -961,7 +1255,7 @@ export class CyberpunkScene {
 
         // Rain
         if (this.rainDrops) {
-            this.rainDrops.material.color.set(palette.rain);
+            this.rainDrops.material.uniforms.color.value.set(palette.rain);
         }
 
         // Skybox uniforms
@@ -1022,18 +1316,10 @@ export class CyberpunkScene {
         this._vehicleLight.position.set(vehiclePos.x, 8, vehiclePos.z - 5);
         this._fillLight.position.set(vehiclePos.x + 5, 12, vehiclePos.z - 15);
 
-        // Rain follows vehicle
+        // Rain — GPU-driven, just update uniforms
         if (this.rainDrops) {
-            const pos = this.rainDrops.geometry.attributes.position;
-            for (let i = 0; i < pos.count; i++) {
-                pos.array[i * 3 + 1] -= this.rainVelocities[i] * 60 * dt;
-                if (pos.array[i * 3 + 1] < -1) {
-                    pos.array[i * 3 + 1] = 50 + Math.random() * 10;
-                    pos.array[i * 3] = vehiclePos.x + (Math.random() - 0.5) * 200;
-                    pos.array[i * 3 + 2] = vehiclePos.z + (Math.random() - 0.5) * 200;
-                }
-            }
-            pos.needsUpdate = true;
+            this.rainDrops.material.uniforms.time.value = elapsed;
+            this.rainDrops.material.uniforms.vehiclePosition.value.copy(vehiclePos);
         }
 
         // Neon sign flicker
@@ -1055,28 +1341,53 @@ export class CyberpunkScene {
         // Camera — chase behind vehicle based on its rotation
         const camDist = 10;
         const camHeight = 5;
-        const maxCamLag = 3; // max distance camera can fall behind target
+        const maxCamLag = 3;
         const behindX = vehiclePos.x + Math.sin(vehicleRot.y) * camDist;
         const behindZ = vehiclePos.z + Math.cos(vehicleRot.y) * camDist;
-        const camTarget = new THREE.Vector3(behindX, camHeight, behindZ);
+        this._camTarget.set(behindX, camHeight, behindZ);
 
         // Smooth exponential follow (frame-rate independent)
         const smoothing = 1 - Math.exp(-8 * dt);
-        this.camera.position.lerp(camTarget, smoothing);
+        this.camera.position.lerp(this._camTarget, smoothing);
 
         // Clamp camera distance so it never drifts too far from target
-        const camOffset = this.camera.position.clone().sub(camTarget);
-        if (camOffset.length() > maxCamLag) {
-            camOffset.setLength(maxCamLag);
-            this.camera.position.copy(camTarget).add(camOffset);
+        this._camOffset.copy(this.camera.position).sub(this._camTarget);
+        if (this._camOffset.length() > maxCamLag) {
+            this._camOffset.setLength(maxCamLag);
+            this.camera.position.copy(this._camTarget).add(this._camOffset);
         }
 
-        const lookTarget = new THREE.Vector3(
+        this._lookTarget.set(
             vehiclePos.x - Math.sin(vehicleRot.y) * 12,
             1.0,
             vehiclePos.z - Math.cos(vehicleRot.y) * 12
         );
-        this.camera.lookAt(lookTarget);
+        this.camera.lookAt(this._lookTarget);
+
+        // Frustum culling — hide chunks behind camera
+        this.camera.updateMatrixWorld();
+        this._projScreenMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+        this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
+        for (const [, chunk] of this.chunks) {
+            const cx = chunk.cx * CHUNK_SIZE;
+            const cz = chunk.cz * CHUNK_SIZE;
+            this._chunkBox.min.set(cx - CHUNK_SIZE / 2, -5, cz - CHUNK_SIZE / 2);
+            this._chunkBox.max.set(cx + CHUNK_SIZE / 2, 80, cz + CHUNK_SIZE / 2);
+            const visible = this._frustum.intersectsBox(this._chunkBox);
+            chunk.group.visible = visible;
+            for (const m of chunk.meshes) {
+                m.visible = visible;
+            }
+        }
+
+        // Update live stream overlay (Layer 2)
+        if (this.liveStreamClient) {
+            this.liveStreamClient.update(dt);
+            const blendFactor = this.liveStreamClient.blendFactor;
+            this.liveBlendPass.uniforms.blendFactor.value = blendFactor;
+            this.liveBlendPass.uniforms.tLiveStream.value = this.liveStreamClient.outputTexture;
+            this.liveBlendPass.enabled = (blendFactor > 0.01);
+        }
 
         this.composer.render();
     }

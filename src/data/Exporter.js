@@ -68,10 +68,19 @@ export class Exporter {
                 framesFolder.file(`frame_${paddedIdx}.jpg`, imgData, { base64: true });
             }
 
-            // Segmentation mask
+            // Segmentation mask (ImageData or legacy base64 string)
             if (f.segmentation_mask) {
-                const maskData = f.segmentation_mask.split(',')[1];
-                masksFolder.file(`mask_${paddedIdx}.png`, maskData, { base64: true });
+                if (f.segmentation_mask instanceof ImageData) {
+                    const tmpCanvas = document.createElement('canvas');
+                    tmpCanvas.width = f.segmentation_mask.width;
+                    tmpCanvas.height = f.segmentation_mask.height;
+                    tmpCanvas.getContext('2d').putImageData(f.segmentation_mask, 0, 0);
+                    const maskData = tmpCanvas.toDataURL('image/png').split(',')[1];
+                    masksFolder.file(`mask_${paddedIdx}.png`, maskData, { base64: true });
+                } else {
+                    const maskData = f.segmentation_mask.split(',')[1];
+                    masksFolder.file(`mask_${paddedIdx}.png`, maskData, { base64: true });
+                }
             }
         }
 
