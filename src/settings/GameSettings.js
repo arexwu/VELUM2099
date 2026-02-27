@@ -23,6 +23,7 @@ const DEFAULTS = {
     dataCaptureInterval: 5,
     radioVolume: 0.15,
     paletteMode: 'all',
+    buildingEdges: false,
 };
 
 const RANGES = {
@@ -43,6 +44,7 @@ const RANGES = {
     dataCaptureInterval:  { min: 1,    max: 60,   type: 'int' },
     radioVolume:          { min: 0,    max: 1,    type: 'float' },
     paletteMode:          { type: 'enum', values: ['all', 'dark', 'light'] },
+    buildingEdges:        { type: 'bool' },
 };
 
 export class GameSettings {

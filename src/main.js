@@ -436,6 +436,9 @@ class App {
             this.vehicle._underglow.material.color.set(s.neonUnderglow);
         }
 
+        // Building edges
+        if (this.scene) this.scene.setEdgesVisible(s.buildingEdges);
+
         // Data collection
         this.collector.setMode(s.dataMode);
         this.collector.continuousInterval = s.dataCaptureInterval;

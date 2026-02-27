@@ -142,6 +142,7 @@ export class Terminal {
         this._addLine(`    bloomThreshold ..... ${s.bloomThreshold}`, 'yellow');
         this._addLine(`    scanlines .......... ${s.scanlines ? 'ON' : 'OFF'}`, 'yellow');
         this._addLine(`    chromaticAberration  ${s.chromaticAberration}`, 'yellow');
+        this._addLine(`    buildingEdges ...... ${s.buildingEdges ? 'ON' : 'OFF'}`, 'yellow');
         this._addLine('');
 
         // ── 相机 / Camera ──
@@ -487,6 +488,14 @@ export class Terminal {
                 break;
             }
 
+            case 'edges': {
+                if (arg === undefined) { this._addLine(`  当前: buildingEdges = ${this._settings.get('buildingEdges') ? 'ON' : 'OFF'}`, 'cyan'); break; }
+                const r = this._settings.set('buildingEdges', arg);
+                if (r.ok) this._addLine(`  ✓ buildingEdges → ${r.value ? 'ON' : 'OFF'}`, 'cyan');
+                else this._addLine(`  ✗ ${r.error}`, 'red');
+                break;
+            }
+
             case 'emissive': {
                 if (arg === undefined) { this._addLine(`  当前: vehicleEmissive = ${this._settings.get('vehicleEmissive')}`, 'cyan'); break; }
                 const r = this._settings.set('vehicleEmissive', arg);
@@ -573,6 +582,7 @@ export class Terminal {
         this._addLine('  /cam <dist> [height]   相机距离/高度', 'dim');
         this._addLine('  /bloom <str> [thresh]  泛光强度/阈值', 'dim');
         this._addLine('  /scanlines <on|off>    扫描线开关', 'dim');
+        this._addLine('  /edges <on|off>        建筑霓虹边框', 'dim');
         this._addLine('  /rain <0-2>            雨量', 'dim');
         this._addLine('  /speed <20-80>         最大速度', 'dim');
         this._addLine('  /drift <0.1-1.0>       漂移横向力', 'dim');

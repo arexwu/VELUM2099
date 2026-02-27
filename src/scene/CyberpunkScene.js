@@ -247,6 +247,10 @@ export class CyberpunkScene {
         // Item 9: Geometry cache for buildings
         this._geoCache = new Map();
 
+        // Building edge outlines (toggled via settings)
+        this._buildingEdgesEnabled = false;
+        this._allEdgeMeshes = [];
+
         // Item 10: Frustum culling
         this._frustum = new THREE.Frustum();
         this._projScreenMatrix = new THREE.Matrix4();
@@ -432,6 +436,7 @@ export class CyberpunkScene {
         const chunkSigns = [];
         const collidables = [];
         this._chunkRBs = [];
+        this._chunkEdgeMeshes = [];
         const worldX = cx * CHUNK_SIZE;
         const worldZ = cz * CHUNK_SIZE;
         const type = this._getChunkType(cx, cz);
@@ -476,7 +481,10 @@ export class CyberpunkScene {
         this.scene.add(group);
         const rooftopBillboards = this._chunkRBs || [];
         this._chunkRBs = null;
-        this.chunks.set(key, { group, meshes, signs: chunkSigns, collidables, type, cx, cz, rooftopBillboards });
+        const edgeMeshes = this._chunkEdgeMeshes || [];
+        this._chunkEdgeMeshes = null;
+        for (const m of edgeMeshes) this._allEdgeMeshes.push(m);
+        this.chunks.set(key, { group, meshes, signs: chunkSigns, collidables, type, cx, cz, rooftopBillboards, edgeMeshes });
     }
 
     _removeChunk(key, chunk) {
@@ -492,6 +500,11 @@ export class CyberpunkScene {
             this.scene.remove(m);
             if (m.geometry) m.geometry.dispose();
             if (m.material) m.material.dispose();
+        }
+        // Remove edge meshes from global tracker
+        if (chunk.edgeMeshes && chunk.edgeMeshes.length) {
+            const edgeSet = new Set(chunk.edgeMeshes);
+            this._allEdgeMeshes = this._allEdgeMeshes.filter(m => !edgeSet.has(m));
         }
         // Remove signs
         this.signs = this.signs.filter(s => !chunk.signs.includes(s));
@@ -1363,6 +1376,16 @@ export class CyberpunkScene {
             meshes.push(line);
         }
 
+        // Neon building edge outline (toggleable via /edges setting)
+        const edgeGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(w + 0.1, h + 0.1, d + 0.1));
+        const edgeMat = new THREE.LineBasicMaterial({ color });
+        const edgeMesh = new THREE.LineSegments(edgeGeo, edgeMat);
+        edgeMesh.position.copy(building.position);
+        edgeMesh.visible = this._buildingEdgesEnabled;
+        this.scene.add(edgeMesh);
+        meshes.push(edgeMesh);
+        if (this._chunkEdgeMeshes) this._chunkEdgeMeshes.push(edgeMesh);
+
         // Windows — InstancedMesh with per-instance color
         const cols = Math.min(Math.floor(w / 1.5), 6);
         const rows = Math.min(Math.floor(h / 2), 12);
@@ -2103,6 +2126,11 @@ export class CyberpunkScene {
             this._paletteIndex = this._palettePool[0];
             this._applyPalette(PALETTES[this._paletteIndex]);
         }
+    }
+
+    setEdgesVisible(enabled) {
+        this._buildingEdgesEnabled = enabled;
+        for (const m of this._allEdgeMeshes) m.visible = enabled;
     }
 
     /* ═══════════════════════════════════════
